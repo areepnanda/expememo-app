@@ -9,17 +9,22 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -28,6 +33,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,17 +58,38 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
+import java.time.LocalDate
+import java.time.LocalDateTime
 
 private val MONTH_NAMES = listOf(
     "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
     "Jul", "Agu", "Sep", "Okt", "Nov", "Des"
 )
 
+private val DAY_NAMES = listOf(
+    "Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"
+)
+
+private val RedPrimary = Color(0xFFC62828)
+private val RedDark = Color(0xFF8E0000)
+private val RedContainer = Color(0xFFFFDAD6)
+private val RedAmount = Color(0xFFC62828)
+private val GrayText = Color(0xFF757575)
+
+private val AppColors = lightColorScheme(
+    primary = RedPrimary,
+    onPrimary = Color.White,
+    primaryContainer = RedContainer,
+    onPrimaryContainer = RedDark,
+    secondaryContainer = RedContainer,
+    onSecondaryContainer = RedDark
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            MaterialTheme(colorScheme = AppColors) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     App()
                 }
@@ -71,13 +99,27 @@ class MainActivity : ComponentActivity() {
 }
 
 data class Txn(
-    val date: String,
+    val dt: LocalDateTime,
     val account: String,
     val category: String,
     val note: String,
-    val amount: Double,
-    val incomeExpense: String
+    val amount: Double
 )
+
+data class DateHeader(val label: String)
+
+data class BankAvatar(val letter: String, val bg: Color, val fg: Color)
+
+fun bankAvatar(account: String): BankAvatar = when {
+    account.contains("bca", true) -> BankAvatar("B", Color(0xFF0A5CA8), Color.White)
+    account.contains("mandiri", true) -> BankAvatar("M", Color(0xFFF7B600), Color(0xFF0B2E6B))
+    account.contains("jenius", true) -> BankAvatar("J", Color(0xFF00AAB8), Color.White)
+    else -> BankAvatar(
+        account.trim().take(1).uppercase().ifBlank { "?" },
+        Color(0xFF9E9E9E),
+        Color.White
+    )
+}
 
 object Api {
     private const val BASE =
@@ -132,17 +174,20 @@ fun parseRows(json: String): List<Txn> {
         throw Exception(obj.optString("error", "respon tidak valid"))
     }
     val arr = obj.getJSONArray("rows")
-    return (0 until arr.length()).map { i ->
-        val o = arr.getJSONObject(i)
-        Txn(
-            date = o.getString("date"),
-            account = o.getString("account"),
-            category = o.getString("category"),
-            note = o.getString("note"),
-            amount = o.getDouble("amount"),
-            incomeExpense = o.getString("incomeExpense")
-        )
-    }
+    return (0 until arr.length())
+        .map { arr.getJSONObject(it) }
+        .filter { it.getString("incomeExpense").equals("Expense", true) }
+        .mapNotNull { o ->
+            val dt = runCatching { LocalDateTime.parse(o.getString("date")) }.getOrNull()
+                ?: return@mapNotNull null
+            Txn(
+                dt = dt,
+                account = o.getString("account"),
+                category = o.getString("category").trim(),
+                note = o.getString("note").trim(),
+                amount = o.getDouble("amount")
+            )
+        }
 }
 
 fun rupiah(value: Double): String {
@@ -154,20 +199,26 @@ fun rupiah(value: Double): String {
     return "Rp " + df.format(value)
 }
 
-fun monthLabel(key: String): String {
-    val parts = key.split("-")
-    if (parts.size != 2) return key
-    val idx = (parts[1].toIntOrNull() ?: 0) - 1
-    if (idx < 0 || idx > 11) return key
-    return MONTH_NAMES[idx] + " " + parts[0]
+fun periodStart(dt: LocalDateTime): LocalDate {
+    val base = LocalDate.of(dt.year, dt.month, 25)
+    return if (dt.dayOfMonth >= 25) base else base.minusMonths(1)
 }
 
-fun dayLabel(iso: String): String {
-    if (iso.length < 16) return iso
-    val monthIdx = (iso.substring(5, 7).toIntOrNull() ?: 1) - 1
-    val month = MONTH_NAMES.getOrElse(monthIdx) { "" }
-    return iso.substring(8, 10) + " " + month + " " + iso.substring(11, 16)
+fun periodLabel(start: LocalDate): String {
+    val end = start.plusMonths(1).minusDays(1)
+    val startPart = start.dayOfMonth.toString() + " " + MONTH_NAMES[start.monthValue - 1] +
+        (if (start.year != end.year) " " + start.year else "")
+    val endPart = end.dayOfMonth.toString() + " " + MONTH_NAMES[end.monthValue - 1] + " " + end.year
+    return "$startPart – $endPart"
 }
+
+fun dayHeaderLabel(dt: LocalDateTime): String {
+    val dayName = DAY_NAMES[dt.dayOfWeek.value % 7]
+    return "$dayName, ${dt.dayOfMonth} ${MONTH_NAMES[dt.monthValue - 1]} ${dt.year}"
+}
+
+fun timeLabel(dt: LocalDateTime): String =
+    "%02d:%02d".format(dt.hour, dt.minute)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -190,7 +241,7 @@ fun App() {
                 val parsed = parseRows(body)
                 rows = parsed
                 if (selected == null && parsed.isNotEmpty()) {
-                    selected = parsed.maxOf { it.date.substring(0, 7) }
+                    selected = parsed.maxOf { periodStart(it.dt) }.toString()
                 }
             } catch (e: Exception) {
                 error = e.message ?: "gagal memuat data"
@@ -211,31 +262,38 @@ fun App() {
         }
     }
 
-    val months = rows
-        ?.map { it.date.substring(0, 7) }
+    val periods = rows
+        ?.map { periodStart(it.dt).toString() }
         ?.distinct()
         ?.sortedDescending()
         ?: emptyList()
 
     val shown = rows
-        ?.filter { selected == null || it.date.substring(0, 7) == selected }
+        ?.filter { selected == null || periodStart(it.dt).toString() == selected }
+        ?.sortedByDescending { it.dt }
         ?: emptyList()
 
-    val totalExpense = shown
-        .filter { it.incomeExpense.equals("Expense", true) }
-        .sumOf { it.amount }
+    val totalExpense = shown.sumOf { it.amount }
 
-    val totalIncome = shown
-        .filter { it.incomeExpense.equals("Income", true) }
-        .sumOf { it.amount }
+    val listItems = buildList {
+        shown.groupBy { it.dt.toLocalDate() }.forEach { (_, items) ->
+            add(DateHeader(dayHeaderLabel(items.first().dt)))
+            addAll(items)
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("ExpeMemo") },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    titleContentColor = Color.White,
+                    actionIconContentColor = Color.White
+                ),
                 actions = {
                     TextButton(onClick = { load() }, enabled = !loading) {
-                        Text(if (loading) "..." else "Refresh")
+                        Text(if (loading) "..." else "Refresh", color = Color.White)
                     }
                 }
             )
@@ -246,8 +304,8 @@ fun App() {
                 .padding(pad)
                 .fillMaxSize()
         ) {
-            MonthFilter(
-                months = months,
+            PeriodFilter(
+                periods = periods,
                 selected = selected,
                 onSelect = { selected = it }
             )
@@ -257,32 +315,27 @@ fun App() {
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
                         Text(
-                            "Pengeluaran",
+                            "Total Pengeluaran",
                             fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = GrayText
                         )
                         Text(
                             rupiah(totalExpense),
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFFC62828)
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            color = RedAmount
                         )
                     }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text(
-                            "Pemasukan",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Text(
-                            rupiah(totalIncome),
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFF2E7D32)
-                        )
-                    }
+                    Text(
+                        "${shown.size} transaksi",
+                        fontSize = 12.sp,
+                        color = GrayText
+                    )
                 }
                 HorizontalDivider()
             }
@@ -290,7 +343,8 @@ fun App() {
             Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     loading && rows == null -> CircularProgressIndicator(
-                        modifier = Modifier.align(Alignment.Center)
+                        modifier = Modifier.align(Alignment.Center),
+                        color = RedPrimary
                     )
                     error != null -> Column(
                         modifier = Modifier.align(Alignment.Center),
@@ -306,12 +360,22 @@ fun App() {
                     rows != null && shown.isEmpty() -> Text(
                         "Tidak ada transaksi",
                         modifier = Modifier.align(Alignment.Center),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = GrayText
                     )
                     else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        items(shown) { t ->
-                            TxnRow(t)
-                            HorizontalDivider()
+                        items(listItems) { entry ->
+                            when (entry) {
+                                is DateHeader -> Text(
+                                    entry.label,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = RedDark,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                )
+                                is Txn -> TxnRow(entry)
+                            }
                         }
                     }
                 }
@@ -341,34 +405,38 @@ fun App() {
 }
 
 @Composable
-fun MonthFilter(
-    months: List<String>,
+fun PeriodFilter(
+    periods: List<String>,
     selected: String?,
     onSelect: (String?) -> Unit
 ) {
-    if (months.isEmpty()) return
+    if (periods.isEmpty()) return
     var open by remember { mutableStateOf(false) }
 
     Box {
         FilterChip(
             selected = true,
             onClick = { open = true },
-            label = { Text(monthLabel(selected ?: months.first()) + "  ▾") },
+            label = {
+                Text(
+                    (if (selected == null) "Semua periode" else periodLabel(LocalDate.parse(selected))) + "  ▾"
+                )
+            },
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
         )
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            months.forEach { m ->
+            periods.forEach { p ->
                 DropdownMenuItem(
-                    text = { Text(monthLabel(m)) },
+                    text = { Text(periodLabel(LocalDate.parse(p))) },
                     onClick = {
-                        onSelect(m)
+                        onSelect(p)
                         open = false
                     }
                 )
             }
             HorizontalDivider()
             DropdownMenuItem(
-                text = { Text("Semua bulan") },
+                text = { Text("Semua periode") },
                 onClick = {
                     onSelect(null)
                     open = false
@@ -380,9 +448,7 @@ fun MonthFilter(
 
 @Composable
 fun TxnRow(t: Txn) {
-    val income = t.incomeExpense.equals("Income", true)
-    val meta = listOf(t.account, t.category.ifBlank { "Tanpa kategori" })
-        .joinToString("  •  ")
+    val avatar = bankAvatar(t.account)
 
     Row(
         modifier = Modifier
@@ -390,6 +456,21 @@ fun TxnRow(t: Txn) {
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Surface(
+            shape = CircleShape,
+            color = avatar.bg,
+            modifier = Modifier.size(30.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    avatar.letter,
+                    color = avatar.fg,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 t.note.ifBlank { "(tanpa catatan)" },
@@ -397,18 +478,33 @@ fun TxnRow(t: Txn) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(
-                dayLabel(t.date) + "   " + meta,
-                fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 2.dp)
+            ) {
+                Text(
+                    timeLabel(t.dt),
+                    fontSize = 12.sp,
+                    color = GrayText
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = if (t.category.isBlank()) Color(0xFFEEEEEE) else RedContainer
+                ) {
+                    Text(
+                        t.category.ifBlank { "Tanpa kategori" },
+                        fontSize = 11.sp,
+                        color = if (t.category.isBlank()) GrayText else RedDark,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
+                }
+            }
         }
         Text(
-            (if (income) "+" else "−") + rupiah(t.amount),
+            rupiah(t.amount),
             fontWeight = FontWeight.SemiBold,
-            color = if (income) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface,
+            color = RedAmount,
             fontSize = 14.sp
         )
     }
