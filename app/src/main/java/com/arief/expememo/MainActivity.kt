@@ -346,8 +346,8 @@ fun categoryStats(txs: List<Txn>): List<CategoryStat> =
 @Composable
 fun CompactTopBar(
     onBack: (() -> Unit)? = null,
-    title: @Composable RowScope.() -> Unit,
-    actions: @Composable RowScope.() -> Unit = {}
+    title: @Composable () -> Unit,
+    actions: @Composable () -> Unit = {}
 ) {
     Surface(color = DarkBg) {
         Row(
@@ -371,9 +371,9 @@ fun CompactTopBar(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart
             ) {
-                title()
+                Box(modifier = Modifier.fillMaxWidth()) { title() }
             }
-            actions()
+            Box { actions() }
         }
     }
     HorizontalDivider(color = CardBorder)
