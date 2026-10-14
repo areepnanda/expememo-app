@@ -3,6 +3,9 @@ package com.arief.expememo
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
+import androidx.core.content.FileProvider
+import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +29,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
@@ -36,6 +40,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +55,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -166,6 +173,61 @@ object Updater {
             conn.disconnect()
         }
     }
+
+    fun download(url: String, target: File, onProgress: (Int) -> Unit): File {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = 120000
+        val total = conn.contentLengthLong
+        try {
+            target.parentFile?.mkdirs()
+            target.outputStream().use { out ->
+                conn.inputStream.use { input ->
+                    val buf = ByteArray(64 * 1024)
+                    var done = 0L
+                    while (true) {
+                        val read = input.read(buf)
+                        if (read == -1) break
+                        out.write(buf, 0, read)
+                        done += read
+                        onProgress(if (total > 0) (done * 100 / total).toInt() else -1)
+                    }
+                }
+            }
+        } finally {
+            conn.disconnect()
+        }
+        return target
+    }
+}
+
+fun canInstall(context: android.content.Context): Boolean =
+    context.packageManager.canRequestPackageInstalls()
+
+fun openUnknownSourcesSettings(context: android.content.Context) {
+    context.startActivity(
+        Intent(
+            Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+            Uri.parse("package:" + context.packageName)
+        )
+    )
+}
+
+fun installApk(context: android.content.Context, file: File): Boolean {
+    if (!canInstall(context)) return false
+    val uri = FileProvider.getUriForFile(
+        context,
+        context.packageName + ".fileprovider",
+        file
+    )
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, "application/vnd.android.package-archive")
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    runCatching { context.startActivity(intent) }
+        .onFailure { return false }
+    return true
 }
 
 fun parseRows(json: String): List<Txn> {
@@ -229,8 +291,25 @@ fun App() {
     var loading by remember { mutableStateOf(false) }
     var updateUrl by remember { mutableStateOf<String?>(null) }
     var updateCode by remember { mutableStateOf<Int?>(null) }
+    var downloadProgress by remember { mutableStateOf<Int?>(null) }
+    var pendingInstall by remember { mutableStateOf<File?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val f = pendingInstall
+                if (f != null) {
+                    pendingInstall = null
+                    installApk(context, f)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     fun load() {
         loading = true
@@ -387,19 +466,60 @@ fun App() {
         AlertDialog(
             onDismissRequest = { updateUrl = null },
             title = { Text("Update tersedia") },
-            text = { Text("Versi baru (build #${updateCode}) tersedia. Download dari GitHub sekarang?") },
+            text = { Text("Versi baru (build #${updateCode}) tersedia. Download dan install sekarang?") },
             confirmButton = {
                 TextButton(onClick = {
                     val url = updateUrl
                     updateUrl = null
                     if (url != null) {
-                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        downloadProgress = 0
+                        scope.launch {
+                            try {
+                                val file = withContext(Dispatchers.IO) {
+                                    val f = File(context.filesDir, "update/expememo-update.apk")
+                                    if (f.exists()) f.delete()
+                                    Updater.download(url, f) { p -> downloadProgress = p }
+                                    f
+                                }
+                                downloadProgress = null
+                                if (!installApk(context, file)) {
+                                    pendingInstall = file
+                                    openUnknownSourcesSettings(context)
+                                }
+                            } catch (e: Exception) {
+                                downloadProgress = null
+                                error = e.message ?: "download gagal"
+                            }
+                        }
                     }
                 }) { Text("Download") }
             },
             dismissButton = {
                 TextButton(onClick = { updateUrl = null }) { Text("Nanti") }
             }
+        )
+    }
+
+    if (downloadProgress != null) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Mengunduh update") },
+            text = {
+                Column {
+                    Text(
+                        (if (downloadProgress ?: -1 < 0) "Mengunduh..." else "${downloadProgress}%"),
+                        fontSize = 13.sp,
+                        color = GrayText
+                    )
+                    Spacer(modifier = Modifier.size(8.dp))
+                    LinearProgressIndicator(
+                        progress = { (downloadProgress ?: 0) / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = RedPrimary
+                    )
+                }
+            },
+            confirmButton = { }
         )
     }
 }
