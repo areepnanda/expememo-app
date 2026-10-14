@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -26,13 +28,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -42,8 +49,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -55,6 +60,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -337,6 +343,84 @@ fun categoryStats(txs: List<Txn>): List<CategoryStat> =
         }
         .sortedByDescending { it.total }
 
+@Composable
+fun CompactTopBar(
+    onBack: (() -> Unit)? = null,
+    title: @Composable RowScope.() -> Unit,
+    actions: @Composable RowScope.() -> Unit = {}
+) {
+    Surface(color = DarkBg) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .padding(start = if (onBack != null) 4.dp else 16.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (onBack != null) {
+                IconButton(onClick = onBack, modifier = Modifier.size(34.dp)) {
+                    Icon(
+                        Icons.Filled.ArrowBack,
+                        contentDescription = "Kembali",
+                        tint = White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier.weight(1f),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                title()
+            }
+            actions()
+        }
+    }
+    HorizontalDivider(color = CardBorder)
+}
+
+@Composable
+fun CompactBottomBar(tab: Int, onTabChange: (Int) -> Unit) {
+    Surface(color = DarkSurface) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp)
+        ) {
+            BottomBarItem("🧾", "Transaksi", tab == 0) { onTabChange(0) }
+            BottomBarItem("📊", "Statistik", tab == 1) { onTabChange(1) }
+        }
+    }
+}
+
+@Composable
+fun RowScope.BottomBarItem(
+    icon: String,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .weight(1f)
+            .fillMaxHeight()
+            .clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            icon,
+            fontSize = 14.sp,
+            modifier = Modifier.alpha(if (selected) 1f else 0.5f)
+        )
+        Text(
+            label,
+            fontSize = 9.sp,
+            color = if (selected) RedPrimary else GrayText
+        )
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun App() {
@@ -499,7 +583,6 @@ fun App() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     tab: Int,
@@ -528,35 +611,94 @@ fun MainScreen(
     Scaffold(
         containerColor = DarkBg,
         topBar = {
-            TopAppBar(
-                title = { Text("ExpeMemo") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = RedPrimary,
-                    titleContentColor = White,
-                    actionIconContentColor = White
-                ),
+            CompactTopBar(
+                title = {
+                    var open by remember { mutableStateOf(false) }
+
+                    Box {
+                        Row(
+                            modifier = Modifier.clickable { open = true },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                "ExpeMemo",
+                                color = White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp
+                            )
+
+                            if (selectedPeriod != null) {
+                                Spacer(modifier = Modifier.width(6.dp))
+
+                                Text(
+                                    periodLabel(LocalDate.parse(selectedPeriod)),
+                                    color = White.copy(alpha = 0.75f),
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Icon(
+                                Icons.Filled.ArrowDropDown,
+                                contentDescription = "Pilih periode",
+                                tint = White
+                            )
+                        }
+
+                        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                            periods.forEach { p ->
+                                DropdownMenuItem(
+                                    text = { Text(periodLabel(LocalDate.parse(p))) },
+                                    onClick = {
+                                        onPeriodChange(p)
+                                        open = false
+                                    }
+                                )
+                            }
+
+                            HorizontalDivider()
+
+                            DropdownMenuItem(
+                                text = { Text("Semua periode") },
+                                onClick = {
+                                    onPeriodChange(null)
+                                    open = false
+                                }
+                            )
+                        }
+                    }
+                },
                 actions = {
-                    TextButton(onClick = onReload, enabled = !loading) {
-                        Text(if (loading) "..." else "Refresh", color = White)
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        if (loading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = White
+                            )
+                        } else {
+                            IconButton(
+                                onClick = onReload,
+                                modifier = Modifier.size(34.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Refresh,
+                                    contentDescription = "Refresh",
+                                    tint = White,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                     }
                 }
             )
         },
         bottomBar = {
-            NavigationBar(containerColor = DarkSurface) {
-                NavigationBarItem(
-                    selected = tab == 0,
-                    onClick = { onTabChange(0) },
-                    icon = { Text("🧾", fontSize = 18.sp) },
-                    label = { Text("Transaksi") }
-                )
-                NavigationBarItem(
-                    selected = tab == 1,
-                    onClick = { onTabChange(1) },
-                    icon = { Text("📊", fontSize = 18.sp) },
-                    label = { Text("Statistik") }
-                )
-            }
+            CompactBottomBar(tab = tab, onTabChange = onTabChange)
         }
     ) { pad ->
         Column(
@@ -564,12 +706,6 @@ fun MainScreen(
                 .padding(pad)
                 .fillMaxSize()
         ) {
-            PeriodFilter(
-                periods = periods,
-                selected = selectedPeriod,
-                onSelect = onPeriodChange
-            )
-
             when (tab) {
                 0 -> TransactionTab(
                     loading = loading,
@@ -629,26 +765,26 @@ fun TransactionTab(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
                         Text(
                             "Total Pengeluaran",
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             color = GrayText
                         )
                         Text(
                             rupiah(totalExpense),
                             fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
+                            fontSize = 15.sp,
                             color = RedAmount
                         )
                     }
                     Text(
                         "${shown.size} transaksi",
-                        fontSize = 12.sp,
+                        fontSize = 10.sp,
                         color = GrayText
                     )
                 }
@@ -695,7 +831,7 @@ fun StatistikTab(
                 border = BorderStroke(1.dp, CardBorder),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     DonutChart(
@@ -706,9 +842,9 @@ fun StatistikTab(
                     )
                     Text(
                         "${shown.size} transaksi",
-                        fontSize = 12.sp,
+                        fontSize = 10.sp,
                         color = GrayText,
-                        modifier = Modifier.padding(bottom = 12.dp)
+                        modifier = Modifier.padding(bottom = 8.dp)
                     )
                 }
             }
@@ -720,7 +856,7 @@ fun StatistikTab(
                 border = BorderStroke(1.dp, CardBorder),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
             ) {
                 Column {
                     stats.forEachIndexed { i, s ->
@@ -744,10 +880,10 @@ fun DonutChart(slices: List<Pair<Color, Float>>, centerValue: String) {
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .fillMaxWidth()
-            .height(210.dp)
+            .height(180.dp)
     ) {
-        Canvas(modifier = Modifier.size(190.dp)) {
-            val stroke = 32.dp.toPx()
+        Canvas(modifier = Modifier.size(160.dp)) {
+            val stroke = 24.dp.toPx()
             val diameter = size.minDimension - stroke
             val topLeft = Offset(
                 (size.width - diameter) / 2f,
@@ -787,13 +923,13 @@ fun DonutChart(slices: List<Pair<Color, Float>>, centerValue: String) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
                 "Total Pengeluaran",
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 color = GrayText
             )
             Text(
                 centerValue,
                 fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
+                fontSize = 13.sp,
                 color = RedAmount
             )
         }
@@ -811,33 +947,34 @@ fun CategoryRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Surface(
             shape = CircleShape,
             color = color.copy(alpha = 0.2f),
-            modifier = Modifier.size(32.dp)
+            modifier = Modifier.size(26.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
                     stat.icon.ifBlank { stat.name.take(1).uppercase() },
-                    fontSize = 15.sp
+                    fontSize = 13.sp
                 )
             }
         }
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 stat.name,
                 fontWeight = FontWeight.Medium,
                 color = White,
+                fontSize = 13.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
             Text(
                 "$percent% • ${stat.count} transaksi",
-                fontSize = 12.sp,
+                fontSize = 10.sp,
                 color = GrayText
             )
         }
@@ -845,50 +982,8 @@ fun CategoryRow(
             rupiah(stat.total),
             fontWeight = FontWeight.SemiBold,
             color = RedAmount,
-            fontSize = 14.sp
+            fontSize = 13.sp
         )
-    }
-}
-
-@Composable
-fun PeriodFilter(
-    periods: List<String>,
-    selected: String?,
-    onSelect: (String?) -> Unit
-) {
-    if (periods.isEmpty()) return
-    var open by remember { mutableStateOf(false) }
-
-    Box {
-        FilterChip(
-            selected = true,
-            onClick = { open = true },
-            label = {
-                Text(
-                    (if (selected == null) "Semua periode" else periodLabel(LocalDate.parse(selected))) + "  ▾"
-                )
-            },
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-        )
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            periods.forEach { p ->
-                DropdownMenuItem(
-                    text = { Text(periodLabel(LocalDate.parse(p))) },
-                    onClick = {
-                        onSelect(p)
-                        open = false
-                    }
-                )
-            }
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text("Semua periode") },
-                onClick = {
-                    onSelect(null)
-                    open = false
-                }
-            )
-        }
     }
 }
 
@@ -900,26 +995,26 @@ fun DateGroupCard(group: DateGroup, onOpenDetail: (Txn) -> Unit) {
         border = BorderStroke(1.dp, CardBorder),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
     ) {
         Column {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     group.label,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
+                    fontSize = 11.sp,
                     color = RedOnContainer
                 )
                 Text(
                     rupiah(group.items.sumOf { it.amount }),
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 12.sp,
+                    fontSize = 11.sp,
                     color = RedAmount
                 )
             }
@@ -939,29 +1034,30 @@ fun TxnRow(t: Txn, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Surface(
             shape = CircleShape,
             color = avatar.bg,
-            modifier = Modifier.size(30.dp)
+            modifier = Modifier.size(24.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Text(
                     avatar.letter,
                     color = avatar.fg,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    fontSize = 12.sp
                 )
             }
         }
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(8.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 t.note.ifBlank { "(tanpa catatan)" },
                 fontWeight = FontWeight.Medium,
                 color = White,
+                fontSize = 13.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -971,14 +1067,14 @@ fun TxnRow(t: Txn, onClick: () -> Unit) {
             ) {
                 Text(
                     timeLabel(t.dt),
-                    fontSize = 12.sp,
+                    fontSize = 10.sp,
                     color = GrayText
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(6.dp))
                 if (t.icon.isNotBlank()) {
                     Text(
                         t.icon,
-                        fontSize = 15.sp
+                        fontSize = 12.sp
                     )
                 } else if (t.category.isNotBlank()) {
                     Surface(
@@ -987,9 +1083,9 @@ fun TxnRow(t: Txn, onClick: () -> Unit) {
                     ) {
                         Text(
                             t.category,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             color = GrayText,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
                         )
                     }
                 }
@@ -999,12 +1095,11 @@ fun TxnRow(t: Txn, onClick: () -> Unit) {
             rupiah(t.amount),
             fontWeight = FontWeight.SemiBold,
             color = RedAmount,
-            fontSize = 14.sp
+            fontSize = 13.sp
         )
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CategoryScreen(
     stat: CategoryStat,
@@ -1020,24 +1115,18 @@ fun CategoryScreen(
     Scaffold(
         containerColor = DarkBg,
         topBar = {
-            TopAppBar(
+            CompactTopBar(
+                onBack = onBack,
                 title = {
                     Text(
                         (if (stat.icon.isNotBlank()) stat.icon + " " else "") + stat.name,
+                        color = White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                },
-                navigationIcon = {
-                    TextButton(onClick = onBack) {
-                        Text("←", color = White, fontSize = 20.sp)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = RedPrimary,
-                    titleContentColor = White,
-                    navigationIconContentColor = White
-                )
+                }
             )
         }
     ) { pad ->
@@ -1049,26 +1138,26 @@ fun CategoryScreen(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column {
                     Text(
                         "Total Pengeluaran",
-                        fontSize = 11.sp,
+                        fontSize = 10.sp,
                         color = GrayText
                     )
                     Text(
                         rupiah(stat.total),
                         fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp,
+                        fontSize = 15.sp,
                         color = RedAmount
                     )
                 }
                 Text(
                     "${stat.count} transaksi",
-                    fontSize = 12.sp,
+                    fontSize = 10.sp,
                     color = GrayText
                 )
             }
@@ -1095,24 +1184,21 @@ fun CategoryScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DetailScreen(t: Txn, onBack: () -> Unit) {
     Scaffold(
         containerColor = DarkBg,
         topBar = {
-            TopAppBar(
-                title = { Text("Detail Transaksi") },
-                navigationIcon = {
-                    TextButton(onClick = onBack) {
-                        Text("←", color = White, fontSize = 20.sp)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = RedPrimary,
-                    titleContentColor = White,
-                    navigationIconContentColor = White
-                )
+            CompactTopBar(
+                onBack = onBack,
+                title = {
+                    Text(
+                        "Detail Transaksi",
+                        color = White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
             )
         }
     ) { pad ->
@@ -1126,21 +1212,21 @@ fun DetailScreen(t: Txn, onBack: () -> Unit) {
             Text(
                 rupiah(t.amount),
                 fontWeight = FontWeight.Bold,
-                fontSize = 34.sp,
+                fontSize = 26.sp,
                 color = RedAmount
             )
             Text(
                 dayHeaderLabel(t.dt) + " • " + timeLabel(t.dt),
-                fontSize = 13.sp,
+                fontSize = 11.sp,
                 color = GrayText,
-                modifier = Modifier.padding(top = 4.dp, bottom = 20.dp)
+                modifier = Modifier.padding(top = 2.dp, bottom = 14.dp)
             )
             Surface(
                 shape = RoundedCornerShape(12.dp),
                 color = DarkSurface,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(Modifier.padding(16.dp)) {
+                Column(Modifier.padding(12.dp)) {
                     DetailRow("Bank", t.account)
                     DetailRow(
                         "Kategori",
@@ -1161,16 +1247,16 @@ fun DetailScreen(t: Txn, onBack: () -> Unit) {
 
 @Composable
 fun DetailRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(
             label,
             color = GrayText,
-            fontSize = 13.sp,
-            modifier = Modifier.width(110.dp)
+            fontSize = 11.sp,
+            modifier = Modifier.width(96.dp)
         )
         Text(
             value,
-            fontSize = 14.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
             color = White,
             modifier = Modifier.weight(1f)
