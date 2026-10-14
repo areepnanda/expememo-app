@@ -7,6 +7,7 @@ import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -84,9 +85,10 @@ private val RedContainer = Color(0xFF93000A)
 private val RedOnContainer = Color(0xFFFFDAD6)
 private val RedAmount = Color(0xFFFF6E63)
 private val GrayText = Color(0xFFA0A0A0)
-private val DarkBg = Color(0xFF141414)
-private val DarkSurface = Color(0xFF1F1F1F)
-private val DarkBadge = Color(0xFF2C2C2C)
+private val DarkBg = Color(0xFF1E1E1E)
+private val DarkSurface = Color(0xFF2A2A2A)
+private val DarkBadge = Color(0xFF3A3A3A)
+private val CardBorder = Color(0xFF3D3D3D)
 
 private val AppColors = darkColorScheme(
     primary = RedPrimary,
@@ -124,7 +126,7 @@ data class Txn(
     val amount: Double
 )
 
-data class DateHeader(val label: String)
+data class DateGroup(val label: String, val items: List<Txn>)
 
 data class BankAvatar(val letter: String, val bg: Color, val fg: Color)
 
@@ -374,12 +376,11 @@ fun App() {
 
         val totalExpense = shown.sumOf { it.amount }
 
-        val listItems = buildList {
-            shown.groupBy { it.dt.toLocalDate() }.forEach { (_, items) ->
-                add(DateHeader(dayHeaderLabel(items.first().dt)))
-                addAll(items)
+        val dateGroups = shown
+            .groupBy { it.dt.toLocalDate() }
+            .map { (date, items) ->
+                DateGroup(dayHeaderLabel(items.first().dt), items)
             }
-        }
 
         Scaffold(
             containerColor = DarkBg,
@@ -437,7 +438,7 @@ fun App() {
                             color = GrayText
                         )
                     }
-                    HorizontalDivider(color = DarkSurface)
+                    HorizontalDivider(color = CardBorder)
                 }
 
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -462,20 +463,12 @@ fun App() {
                             modifier = Modifier.align(Alignment.Center),
                             color = GrayText
                         )
-                        else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            items(listItems) { entry ->
-                                when (entry) {
-                                    is DateHeader -> Text(
-                                        entry.label,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 13.sp,
-                                        color = RedOnContainer,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                                    )
-                                    is Txn -> TxnRow(entry) { detail = entry }
-                                }
+                        else -> LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 16.dp)
+                        ) {
+                            items(dateGroups) { group ->
+                                DateGroupCard(group) { detail = it }
                             }
                         }
                     }
@@ -589,6 +582,45 @@ fun PeriodFilter(
 }
 
 @Composable
+fun DateGroupCard(group: DateGroup, onOpenDetail: (Txn) -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = DarkSurface,
+        border = BorderStroke(1.dp, CardBorder),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    group.label,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = RedOnContainer
+                )
+                Text(
+                    rupiah(group.items.sumOf { it.amount }),
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = RedAmount
+                )
+            }
+            group.items.forEachIndexed { i, t ->
+                if (i > 0) HorizontalDivider(color = CardBorder)
+                TxnRow(t) { onOpenDetail(t) }
+            }
+        }
+    }
+}
+
+@Composable
 fun TxnRow(t: Txn, onClick: () -> Unit) {
     val avatar = bankAvatar(t.account)
 
@@ -596,7 +628,7 @@ fun TxnRow(t: Txn, onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Surface(
