@@ -1,5 +1,7 @@
 package com.arief.expememo
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -35,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -78,14 +82,44 @@ data class Txn(
 object Api {
     private const val BASE =
         "https://script.google.com/macros/s/REDACTED/exec"
-    private const val TOKEN = "c6dae53f243b358acf4839514ff0d01f"
 
     fun fetch(): String {
-        val conn = URL("$BASE?token=$TOKEN&months=24").openConnection() as HttpURLConnection
+        val conn = URL("$BASE?token=${BuildConfig.EXPEMEMO_TOKEN}&months=24").openConnection() as HttpURLConnection
         conn.connectTimeout = 15000
         conn.readTimeout = 45000
         try {
             return conn.inputStream.bufferedReader().use { it.readText() }
+        } finally {
+            conn.disconnect()
+        }
+    }
+}
+
+object Updater {
+    private const val RELEASES_API =
+        "https://api.github.com/repos/areepnanda/expememo-app/releases/latest"
+
+    fun check(currentCode: Int): Pair<Int, String>? {
+        val conn = URL(RELEASES_API).openConnection() as HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = 30000
+        conn.setRequestProperty("Accept", "application/vnd.github+json")
+        try {
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val obj = JSONObject(body)
+            val code = Regex("versionCode:\\s*(\\d+)")
+                .find(obj.optString("body", ""))
+                ?.groupValues?.get(1)?.toIntOrNull()
+                ?: return null
+            if (code <= currentCode) return null
+            val assets = obj.getJSONArray("assets")
+            for (i in 0 until assets.length()) {
+                val a = assets.getJSONObject(i)
+                if (a.getString("name").endsWith(".apk")) {
+                    return code to a.getString("browser_download_url")
+                }
+            }
+            return null
         } finally {
             conn.disconnect()
         }
@@ -142,7 +176,10 @@ fun App() {
     var error by remember { mutableStateOf<String?>(null) }
     var selected by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    var updateUrl by remember { mutableStateOf<String?>(null) }
+    var updateCode by remember { mutableStateOf<Int?>(null) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     fun load() {
         loading = true
@@ -163,7 +200,16 @@ fun App() {
         }
     }
 
-    LaunchedEffect(Unit) { load() }
+    LaunchedEffect(Unit) {
+        load()
+        val update = runCatching {
+            withContext(Dispatchers.IO) { Updater.check(BuildConfig.VERSION_CODE) }
+        }.getOrNull()
+        if (update != null) {
+            updateCode = update.first
+            updateUrl = update.second
+        }
+    }
 
     val months = rows
         ?.map { it.date.substring(0, 7) }
@@ -271,6 +317,26 @@ fun App() {
                 }
             }
         }
+    }
+
+    if (updateUrl != null) {
+        AlertDialog(
+            onDismissRequest = { updateUrl = null },
+            title = { Text("Update tersedia") },
+            text = { Text("Versi baru (build #${updateCode}) tersedia. Download dari GitHub sekarang?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val url = updateUrl
+                    updateUrl = null
+                    if (url != null) {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                }) { Text("Download") }
+            },
+            dismissButton = {
+                TextButton(onClick = { updateUrl = null }) { Text("Nanti") }
+            }
+        )
     }
 }
 
