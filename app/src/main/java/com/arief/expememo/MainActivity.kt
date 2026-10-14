@@ -621,23 +621,14 @@ fun MainScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                "ExpeMemo",
+                                if (selectedPeriod == null) "Semua periode"
+                                else periodLabel(LocalDate.parse(selectedPeriod)),
                                 color = White,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 16.sp
+                                fontSize = 14.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-
-                            if (selectedPeriod != null) {
-                                Spacer(modifier = Modifier.width(6.dp))
-
-                                Text(
-                                    periodLabel(LocalDate.parse(selectedPeriod)),
-                                    color = White.copy(alpha = 0.75f),
-                                    fontSize = 10.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
 
                             Icon(
                                 Icons.Filled.ArrowDropDown,
