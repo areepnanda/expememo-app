@@ -10,6 +10,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,22 +30,23 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -60,14 +62,19 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -85,6 +92,10 @@ import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.time.LocalDate
 import java.time.LocalDateTime
+import kotlin.math.floor
+import kotlin.math.log10
+import kotlin.math.pow
+import kotlin.math.roundToInt
 
 private val MONTH_NAMES = listOf(
     "Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
@@ -104,7 +115,37 @@ private val DarkBg = Color(0xFF1E1E1E)
 private val DarkSurface = Color(0xFF2A2A2A)
 private val DarkBadge = Color(0xFF3A3A3A)
 private val CardBorder = Color(0xFF3D3D3D)
+private val Maroon = Color(0xFF800000)
 private val White = Color.White
+
+private fun makeIcon(name: String, pathData: String): ImageVector =
+    ImageVector.Builder(
+        name = name,
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f
+    ).apply {
+        addPath(
+            pathData = addPathNodes(pathData),
+            fill = SolidColor(Color.Black)
+        )
+    }.build()
+
+private val IconReceipt = makeIcon(
+    "Receipt",
+    "M18 17H6v-2h12v2zm0-4H6v-2h12v2zm0-4H6V7h12v2zM3 22l1.5-1.5L6 22l1.5-1.5L9 22l1.5-1.5L12 22l1.5-1.5L15 22l1.5-1.5L18 22l1.5-1.5L21 22V2l-1.5 1.5L18 2l-1.5 1.5L15 2l-1.5 1.5L12 2l-1.5 1.5L9 2 7.5 3.5 6 2 4.5 3.5 3 2v20z"
+)
+
+private val IconBarChart = makeIcon(
+    "BarChart",
+    "M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"
+)
+
+private val IconBank = makeIcon(
+    "Bank",
+    "M4 10h3v7H4zm6.5 0h3v7h-3zM2 19h20v3H2zm15.5-9h3v7h-3zM12 1L2 6v2h20V6z"
+)
 
 private val CHART_COLORS = listOf(
     Color(0xFFE53935), Color(0xFFFB8C00), Color(0xFFFDD835),
@@ -158,6 +199,12 @@ data class CategoryStat(
     val total: Double,
     val count: Int,
     val txs: List<Txn>
+)
+
+data class BankStat(
+    val name: String,
+    val total: Double,
+    val count: Int
 )
 
 data class BankAvatar(val letter: String, val bg: Color, val fg: Color)
@@ -309,6 +356,32 @@ fun rupiah(value: Double): String {
     return "Rp " + df.format(value)
 }
 
+private fun shortNum(n: Double): String {
+    val rounded = (n * 10).roundToInt() / 10.0
+    return if (rounded == rounded.toInt().toDouble()) rounded.toInt().toString()
+    else rounded.toString().replace('.', ',')
+}
+
+fun shortRupiah(value: Double): String = when {
+    value >= 1_000_000 -> shortNum(value / 1_000_000) + "jt"
+    value >= 1_000 -> shortNum(value / 1_000) + "rb"
+    else -> value.roundToInt().toString()
+}
+
+private fun niceCeil(v: Double): Double {
+    if (v <= 0.0) return 1.0
+    val base = 10.0.pow(floor(log10(v)))
+    val f = v / base
+    val nice = when {
+        f <= 1.0 -> 1.0
+        f <= 2.0 -> 2.0
+        f <= 2.5 -> 2.5
+        f <= 5.0 -> 5.0
+        else -> 10.0
+    }
+    return nice * base
+}
+
 fun periodStart(dt: LocalDateTime): LocalDate {
     val base = LocalDate.of(dt.year, dt.month, 25)
     return if (dt.dayOfMonth >= 25) base else base.minusMonths(1)
@@ -349,31 +422,51 @@ fun CompactTopBar(
     title: @Composable () -> Unit,
     actions: @Composable () -> Unit = {}
 ) {
-    Surface(color = DarkBg) {
-        Row(
+    Surface(color = Maroon) {
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp)
-                .padding(start = if (onBack != null) 4.dp else 16.dp, end = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .height(44.dp)
         ) {
-            if (onBack != null) {
-                IconButton(onClick = onBack, modifier = Modifier.size(34.dp)) {
-                    Icon(
-                        Icons.Filled.ArrowBack,
-                        contentDescription = "Kembali",
-                        tint = White,
-                        modifier = Modifier.size(18.dp)
+            Canvas(modifier = Modifier.matchParentSize()) {
+                val step = 8.dp.toPx()
+                val stroke = 1.dp.toPx()
+                val h = size.height
+                var x = -h
+                while (x < size.width + h) {
+                    drawLine(
+                        color = White.copy(alpha = 0.08f),
+                        start = Offset(x, 0f),
+                        end = Offset(x + h, h),
+                        strokeWidth = stroke
                     )
+                    x += step
                 }
             }
-            Box(
-                modifier = Modifier.weight(1f),
-                contentAlignment = Alignment.CenterStart
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = if (onBack != null) 4.dp else 16.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(modifier = Modifier.fillMaxWidth()) { title() }
+                if (onBack != null) {
+                    IconButton(onClick = onBack, modifier = Modifier.size(34.dp)) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Kembali",
+                            tint = White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier.weight(1f),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Box(modifier = Modifier.fillMaxWidth()) { title() }
+                }
+                Box { actions() }
             }
-            Box { actions() }
         }
     }
     HorizontalDivider(color = CardBorder)
@@ -387,15 +480,16 @@ fun CompactBottomBar(tab: Int, onTabChange: (Int) -> Unit) {
                 .fillMaxWidth()
                 .height(52.dp)
         ) {
-            BottomBarItem("🧾", "Transaksi", tab == 0) { onTabChange(0) }
-            BottomBarItem("📊", "Statistik", tab == 1) { onTabChange(1) }
+            BottomBarItem(IconReceipt, "Transaksi", tab == 0) { onTabChange(0) }
+            BottomBarItem(IconBarChart, "Statistik", tab == 1) { onTabChange(1) }
+            BottomBarItem(IconBank, "Bank", tab == 2) { onTabChange(2) }
         }
     }
 }
 
 @Composable
 fun RowScope.BottomBarItem(
-    icon: String,
+    icon: ImageVector,
     label: String,
     selected: Boolean,
     onClick: () -> Unit
@@ -408,10 +502,11 @@ fun RowScope.BottomBarItem(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text(
+        Icon(
             icon,
-            fontSize = 14.sp,
-            modifier = Modifier.alpha(if (selected) 1f else 0.5f)
+            contentDescription = label,
+            tint = if (selected) RedPrimary else GrayText,
+            modifier = Modifier.size(20.dp)
         )
         Text(
             label,
@@ -435,6 +530,9 @@ fun App() {
     var updateCode by remember { mutableStateOf<Int?>(null) }
     var downloadProgress by remember { mutableStateOf<Int?>(null) }
     var pendingInstall by remember { mutableStateOf<File?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var bankFilter by remember { mutableStateOf<String?>(null) }
+    var categoryFilter by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
@@ -515,6 +613,12 @@ fun App() {
                 ?: emptyList(),
             selectedPeriod = selected,
             onPeriodChange = { selected = it },
+            searchQuery = searchQuery,
+            onSearchChange = { searchQuery = it },
+            bankFilter = bankFilter,
+            onBankFilterChange = { bankFilter = it },
+            categoryFilter = categoryFilter,
+            onCategoryFilterChange = { categoryFilter = it },
             onReload = { load() },
             onOpenTxn = { detail = it },
             onOpenCategory = { selectedCategory = it }
@@ -583,6 +687,7 @@ fun App() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     tab: Int,
@@ -594,18 +699,16 @@ fun MainScreen(
     periods: List<String>,
     selectedPeriod: String?,
     onPeriodChange: (String?) -> Unit,
+    searchQuery: String,
+    onSearchChange: (String) -> Unit,
+    bankFilter: String?,
+    onBankFilterChange: (String?) -> Unit,
+    categoryFilter: String?,
+    onCategoryFilterChange: (String?) -> Unit,
     onReload: () -> Unit,
     onOpenTxn: (Txn) -> Unit,
     onOpenCategory: (String) -> Unit
 ) {
-    val totalExpense = shown.sumOf { it.amount }
-
-    val dateGroups = shown
-        .groupBy { it.dt.toLocalDate() }
-        .map { (date, items) ->
-            DateGroup(dayHeaderLabel(items.first().dt), items)
-        }
-
     val stats = categoryStats(shown)
 
     Scaffold(
@@ -659,32 +762,6 @@ fun MainScreen(
                             )
                         }
                     }
-                },
-                actions = {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        if (loading) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = White
-                            )
-                        } else {
-                            IconButton(
-                                onClick = onReload,
-                                modifier = Modifier.size(34.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.Refresh,
-                                    contentDescription = "Refresh",
-                                    tint = White,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
                 }
             )
         },
@@ -697,23 +774,33 @@ fun MainScreen(
                 .padding(pad)
                 .fillMaxSize()
         ) {
-            when (tab) {
-                0 -> TransactionTab(
-                    loading = loading,
-                    error = error,
-                    rowsLoaded = rowsLoaded,
-                    shown = shown,
-                    totalExpense = totalExpense,
-                    dateGroups = dateGroups,
-                    onReload = onReload,
-                    onOpenTxn = onOpenTxn
-                )
-                1 -> StatistikTab(
-                    shown = shown,
-                    stats = stats,
-                    totalExpense = totalExpense,
-                    onOpenCategory = onOpenCategory
-                )
+            PullToRefreshBox(
+                isRefreshing = loading,
+                onRefresh = onReload,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                when (tab) {
+                    0 -> TransactionTab(
+                        loading = loading,
+                        error = error,
+                        rowsLoaded = rowsLoaded,
+                        shown = shown,
+                        searchQuery = searchQuery,
+                        onSearchChange = onSearchChange,
+                        bankFilter = bankFilter,
+                        onBankFilterChange = onBankFilterChange,
+                        categoryFilter = categoryFilter,
+                        onCategoryFilterChange = onCategoryFilterChange,
+                        onReload = onReload,
+                        onOpenTxn = onOpenTxn
+                    )
+                    1 -> StatistikTab(
+                        shown = shown,
+                        stats = stats,
+                        onOpenCategory = onOpenCategory
+                    )
+                    2 -> BankTab(shown = shown)
+                }
             }
         }
     }
@@ -725,11 +812,39 @@ fun TransactionTab(
     error: String?,
     rowsLoaded: Boolean,
     shown: List<Txn>,
-    totalExpense: Double,
-    dateGroups: List<DateGroup>,
+    searchQuery: String,
+    onSearchChange: (String) -> Unit,
+    bankFilter: String?,
+    onBankFilterChange: (String?) -> Unit,
+    categoryFilter: String?,
+    onCategoryFilterChange: (String?) -> Unit,
     onReload: () -> Unit,
     onOpenTxn: (Txn) -> Unit
 ) {
+    val banks = remember(shown) {
+        shown.map { it.account }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val categories = remember(shown) {
+        shown.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
+    }
+    val catIconOf = remember(shown) {
+        shown.groupBy { it.category }.mapValues { (_, v) ->
+            v.firstOrNull { it.icon.isNotBlank() }?.icon ?: ""
+        }
+    }
+
+    val filtered = shown.filter { t ->
+        (searchQuery.isBlank() || t.note.contains(searchQuery, ignoreCase = true)) &&
+            (bankFilter == null || t.account == bankFilter) &&
+            (categoryFilter == null || t.category == categoryFilter)
+    }
+    val totalExpense = filtered.sumOf { it.amount }
+    val dateGroups = filtered
+        .groupBy { it.dt.toLocalDate() }
+        .map { (_, items) ->
+            DateGroup(dayHeaderLabel(items.first().dt), items)
+        }
+
     Box(modifier = Modifier.fillMaxSize()) {
         when {
             loading && !rowsLoaded -> CircularProgressIndicator(
@@ -753,39 +868,100 @@ fun TransactionTab(
                 color = GrayText
             )
             else -> Column(modifier = Modifier.fillMaxSize()) {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = onSearchChange,
+                    singleLine = true,
+                    placeholder = {
+                        Text("Cari catatan…", fontSize = 13.sp, color = GrayText)
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Filled.Search,
+                            contentDescription = "Cari",
+                            tint = GrayText,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                )
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Column {
+                    FilterDropdownChip(
+                        label = "Bank",
+                        value = bankFilter,
+                        options = banks,
+                        onSelect = onBankFilterChange
+                    )
+                    FilterDropdownChip(
+                        label = "Kategori",
+                        value = categoryFilter,
+                        options = categories,
+                        optionLabel = { c ->
+                            val ic = catIconOf[c] ?: ""
+                            if (ic.isBlank()) c else "$ic $c"
+                        },
+                        onSelect = onCategoryFilterChange
+                    )
+                }
+                HorizontalDivider(
+                    color = CardBorder,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+                if (filtered.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
-                            "Total Pengeluaran",
+                            if (searchQuery.isNotBlank() || bankFilter != null || categoryFilter != null)
+                                "Tidak ada yang cocok dengan filter"
+                            else "Tidak ada transaksi",
+                            color = GrayText
+                        )
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                "Total Pengeluaran",
+                                fontSize = 10.sp,
+                                color = GrayText
+                            )
+                            Text(
+                                rupiah(totalExpense),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = RedAmount
+                            )
+                        }
+                        Text(
+                            "${filtered.size} transaksi",
                             fontSize = 10.sp,
                             color = GrayText
                         )
-                        Text(
-                            rupiah(totalExpense),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = RedAmount
-                        )
                     }
-                    Text(
-                        "${shown.size} transaksi",
-                        fontSize = 10.sp,
-                        color = GrayText
-                    )
-                }
-                HorizontalDivider(color = CardBorder)
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 16.dp)
-                ) {
-                    items(dateGroups) { group ->
-                        DateGroupCard(group) { onOpenTxn(it) }
+                    HorizontalDivider(color = CardBorder)
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(bottom = 16.dp)
+                    ) {
+                        items(dateGroups) { group ->
+                            DateGroupCard(group) { onOpenTxn(it) }
+                        }
                     }
                 }
             }
@@ -794,10 +970,62 @@ fun TransactionTab(
 }
 
 @Composable
+fun FilterDropdownChip(
+    label: String,
+    value: String?,
+    options: List<String>,
+    optionLabel: (String) -> String = { it },
+    onSelect: (String?) -> Unit
+) {
+    var open by remember { mutableStateOf(false) }
+
+    Box {
+        FilterChip(
+            selected = value != null,
+            onClick = { open = true },
+            label = {
+                Text(
+                    if (value == null) label else optionLabel(value),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
+            trailingIcon = {
+                Icon(
+                    Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        )
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(
+                text = { Text("$label: Semua") },
+                onClick = {
+                    onSelect(null)
+                    open = false
+                }
+            )
+            if (options.isNotEmpty()) HorizontalDivider()
+            options.forEach { o ->
+                DropdownMenuItem(
+                    text = { Text(optionLabel(o), fontSize = 13.sp) },
+                    onClick = {
+                        onSelect(o)
+                        open = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 fun StatistikTab(
     shown: List<Txn>,
     stats: List<CategoryStat>,
-    totalExpense: Double,
     onOpenCategory: (String) -> Unit
 ) {
     if (shown.isEmpty()) {
@@ -810,6 +1038,8 @@ fun StatistikTab(
         }
         return
     }
+
+    val totalExpense = shown.sumOf { it.amount }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -825,17 +1055,27 @@ fun StatistikTab(
                     .padding(horizontal = 10.dp, vertical = 4.dp)
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    DonutChart(
-                        slices = stats.mapIndexed { i, s ->
-                            CHART_COLORS[i % CHART_COLORS.size] to s.total.toFloat()
-                        },
-                        centerValue = rupiah(totalExpense)
+                    Text(
+                        "Total Pengeluaran",
+                        fontSize = 10.sp,
+                        color = GrayText,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                    Text(
+                        rupiah(totalExpense),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = RedAmount
                     )
                     Text(
                         "${shown.size} transaksi",
                         fontSize = 10.sp,
                         color = GrayText,
-                        modifier = Modifier.padding(bottom = 8.dp)
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    BarChart(
+                        stats = stats,
+                        onOpenCategory = onOpenCategory
                     )
                 }
             }
@@ -866,63 +1106,212 @@ fun StatistikTab(
 }
 
 @Composable
-fun DonutChart(slices: List<Pair<Color, Float>>, centerValue: String) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(180.dp)
-    ) {
-        Canvas(modifier = Modifier.size(160.dp)) {
-            val stroke = 24.dp.toPx()
-            val diameter = size.minDimension - stroke
-            val topLeft = Offset(
-                (size.width - diameter) / 2f,
-                (size.height - diameter) / 2f
-            )
-            val arcSize = Size(diameter, diameter)
-            val total = slices.sumOf { it.second.toDouble() }.toFloat()
+fun BarChart(
+    stats: List<CategoryStat>,
+    onOpenCategory: (String) -> Unit
+) {
+    if (stats.isEmpty()) return
 
-            if (slices.size == 1) {
-                drawArc(
-                    color = slices[0].first,
-                    startAngle = 0f,
-                    sweepAngle = 360f,
-                    useCenter = false,
-                    style = Stroke(width = stroke),
-                    topLeft = topLeft,
-                    size = arcSize
+    val textMeasurer = rememberTextMeasurer()
+    val labelStyle = TextStyle(fontSize = 9.sp, color = GrayText)
+    val niceMax = niceCeil(stats.maxOf { it.total })
+    val leftPad = 38.dp
+    val gridCount = 4
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(190.dp)
+                .pointerInput(stats) {
+                    detectTapGestures { pos ->
+                        val pad = leftPad.toPx()
+                        if (pos.x < pad) return@detectTapGestures
+                        val slot = (size.width - pad) / stats.size
+                        val idx = ((pos.x - pad) / slot)
+                            .toInt()
+                            .coerceIn(0, stats.size - 1)
+                        onOpenCategory(stats[idx].name)
+                    }
+                }
+        ) {
+            val pad = leftPad.toPx()
+            val bottomPad = 6.dp.toPx()
+            val chartW = size.width - pad
+            val chartH = size.height - bottomPad
+
+            for (i in 0..gridCount) {
+                val y = chartH - chartH * i / gridCount
+                drawLine(
+                    color = CardBorder,
+                    start = Offset(pad, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 1.dp.toPx()
                 )
-            } else {
-                var start = -90f
-                val gap = 2f
-                slices.forEach { (color, value) ->
-                    val sweep = value / total * 360f
-                    drawArc(
-                        color = color,
-                        startAngle = start + gap / 2,
-                        sweepAngle = (sweep - gap).coerceAtLeast(0.5f),
-                        useCenter = false,
-                        style = Stroke(width = stroke),
-                        topLeft = topLeft,
-                        size = arcSize
+                val value = niceMax * i / gridCount
+                val text = textMeasurer.measure(shortRupiah(value), labelStyle)
+                drawText(
+                    textLayoutResult = text,
+                    topLeft = Offset(
+                        pad - 6.dp.toPx() - text.size.width,
+                        y - text.size.height / 2f
                     )
-                    start += sweep
+                )
+            }
+
+            val slot = chartW / stats.size
+            val barWidth = (slot * 0.55f).coerceAtMost(32.dp.toPx())
+            stats.forEachIndexed { i, s ->
+                val barHeight = ((s.total / niceMax).toFloat() * chartH).coerceAtLeast(2.dp.toPx())
+                val left = pad + slot * i + (slot - barWidth) / 2f
+                drawRoundRect(
+                    color = CHART_COLORS[i % CHART_COLORS.size],
+                    topLeft = Offset(left, chartH - barHeight),
+                    size = Size(barWidth, barHeight),
+                    cornerRadius = CornerRadius(4.dp.toPx())
+                )
+            }
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = leftPad)
+        ) {
+            stats.forEach { s ->
+                Box(
+                    modifier = Modifier.weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        s.icon.ifBlank { s.name.take(1) },
+                        fontSize = 13.sp,
+                        maxLines = 1
+                    )
                 }
             }
         }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    }
+}
+
+@Composable
+fun BankTab(shown: List<Txn>) {
+    if (shown.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize()) {
             Text(
-                "Total Pengeluaran",
+                "Tidak ada transaksi",
+                modifier = Modifier.align(Alignment.Center),
+                color = GrayText
+            )
+        }
+        return
+    }
+
+    val total = shown.sumOf { it.amount }
+    val bankStats = remember(shown) {
+        shown.groupBy { it.account.trim().ifBlank { "Tanpa nama" } }
+            .map { (name, items) -> BankStat(name, items.sumOf { it.amount }, items.size) }
+            .sortedByDescending { it.total }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text(
+                    "Total Pengeluaran",
+                    fontSize = 10.sp,
+                    color = GrayText
+                )
+                Text(
+                    rupiah(total),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = RedAmount
+                )
+            }
+            Text(
+                "${shown.size} transaksi",
                 fontSize = 10.sp,
                 color = GrayText
             )
-            Text(
-                centerValue,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                color = RedAmount
-            )
+        }
+        HorizontalDivider(color = CardBorder)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 16.dp)
+        ) {
+            item {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = DarkSurface,
+                    border = BorderStroke(1.dp, CardBorder),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Column {
+                        bankStats.forEachIndexed { i, b ->
+                            if (i > 0) HorizontalDivider(color = CardBorder)
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val avatar = bankAvatar(b.name)
+                                Surface(
+                                    shape = CircleShape,
+                                    color = avatar.bg,
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            avatar.letter,
+                                            color = avatar.fg,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        b.name,
+                                        fontWeight = FontWeight.Medium,
+                                        color = White,
+                                        fontSize = 13.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        "${b.count} transaksi",
+                                        fontSize = 10.sp,
+                                        color = GrayText
+                                    )
+                                }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        rupiah(b.total),
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = RedAmount,
+                                        fontSize = 13.sp
+                                    )
+                                    Text(
+                                        "${(b.total / total * 100).toInt()}%",
+                                        fontSize = 10.sp,
+                                        color = GrayText
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
