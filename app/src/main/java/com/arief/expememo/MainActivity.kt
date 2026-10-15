@@ -571,13 +571,13 @@ fun App() {
     var searchQuery by remember { mutableStateOf("") }
     var bankFilter by remember { mutableStateOf<String?>(null) }
     var categoryFilter by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var bioAvailable by remember { mutableStateOf(biometricAvailable(context)) }
     var locked by remember {
         mutableStateOf(bioAvailable && biometricEnabled(context))
     }
     var backgrounded by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
 
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
