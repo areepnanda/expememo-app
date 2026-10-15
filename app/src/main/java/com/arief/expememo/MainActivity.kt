@@ -1,12 +1,14 @@
 package com.arief.expememo
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -34,6 +36,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -78,7 +82,9 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.Dispatchers
@@ -147,6 +153,38 @@ private val IconBank = makeIcon(
     "M4 10h3v7H4zm6.5 0h3v7h-3zM2 19h20v3H2zm15.5-9h3v7h-3zM12 1L2 6v2h20V6z"
 )
 
+private val IconLock = makeIcon(
+    "Lock",
+    "M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM9 8V6c0-1.66 1.34-3 3-3s3 1.34 3 3v2H9z"
+)
+
+private val IconLockOpen = makeIcon(
+    "LockOpen",
+    "M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"
+)
+
+private const val PREFS_NAME = "expememo_prefs"
+private const val KEY_BIOMETRIC = "biometric_enabled"
+
+private val AUTHENTICATORS =
+    BiometricManager.Authenticators.BIOMETRIC_WEAK or
+        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+
+fun biometricAvailable(context: Context): Boolean =
+    BiometricManager.from(context)
+        .canAuthenticate(AUTHENTICATORS) == BiometricManager.BIOMETRIC_SUCCESS
+
+fun biometricEnabled(context: Context): Boolean =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(KEY_BIOMETRIC, true)
+
+fun setBiometricEnabled(context: Context, enabled: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(KEY_BIOMETRIC, enabled)
+        .apply()
+}
+
 private val CHART_COLORS = listOf(
     Color(0xFFE53935), Color(0xFFFB8C00), Color(0xFFFDD835),
     Color(0xFF43A047), Color(0xFF00ACC1), Color(0xFF1E88E5),
@@ -167,7 +205,7 @@ private val AppColors = darkColorScheme(
     surfaceVariant = DarkSurface
 )
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -533,17 +571,31 @@ fun App() {
     var searchQuery by remember { mutableStateOf("") }
     var bankFilter by remember { mutableStateOf<String?>(null) }
     var categoryFilter by remember { mutableStateOf<String?>(null) }
+    var bioAvailable by remember { mutableStateOf(biometricAvailable(context)) }
+    var locked by remember {
+        mutableStateOf(bioAvailable && biometricEnabled(context))
+    }
+    var backgrounded by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                backgrounded = true
+            }
             if (event == Lifecycle.Event.ON_RESUME) {
                 val f = pendingInstall
                 if (f != null) {
                     pendingInstall = null
                     installApk(context, f)
+                }
+                if (backgrounded) {
+                    backgrounded = false
+                    if (biometricAvailable(context) && biometricEnabled(context)) {
+                        locked = true
+                    }
                 }
             }
         }
@@ -589,7 +641,9 @@ fun App() {
         ?.sortedByDescending { it.dt }
         ?: emptyList()
 
-    if (detail != null) {
+    if (locked) {
+        LockScreen(onUnlocked = { locked = false })
+    } else if (detail != null) {
         DetailScreen(detail!!) { detail = null }
     } else if (selectedCategory != null) {
         CategoryScreen(
@@ -759,6 +813,30 @@ fun MainScreen(
                                     onPeriodChange(null)
                                     open = false
                                 }
+                            )
+                        }
+                    }
+                },
+                actions = {
+                    val ctx = LocalContext.current
+                    val bioAvailable = remember { biometricAvailable(ctx) }
+                    var bioOn by remember { mutableStateOf(biometricEnabled(ctx)) }
+                    if (bioAvailable) {
+                        IconButton(
+                            onClick = {
+                                val newValue = !bioOn
+                                setBiometricEnabled(ctx, newValue)
+                                bioOn = newValue
+                            },
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Icon(
+                                if (bioOn) IconLock else IconLockOpen,
+                                contentDescription =
+                                    if (bioOn) "Matikan kunci sidik jari"
+                                    else "Aktifkan kunci sidik jari",
+                                tint = if (bioOn) White else GrayText,
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     }
@@ -1559,6 +1637,98 @@ fun CategoryScreen(
                         DateGroupCard(group) { onOpenTxn(it) }
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+fun LockScreen(onUnlocked: () -> Unit) {
+    val activity = LocalContext.current as? FragmentActivity
+    var errorText by remember { mutableStateOf<String?>(null) }
+
+    fun showPrompt() {
+        val frag = activity ?: return
+        val prompt = BiometricPrompt(
+            frag,
+            ContextCompat.getMainExecutor(frag),
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    errorText = null
+                    onUnlocked()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    if (errorCode != BiometricPrompt.ERROR_USER_CANCELED &&
+                        errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON &&
+                        errorCode != BiometricPrompt.ERROR_CANCELED
+                    ) {
+                        errorText = errString.toString()
+                    }
+                }
+            }
+        )
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Buka ExpeMemo")
+            .setSubtitle("Gunakan sidik jari atau kunci layar Anda")
+            .setAllowedAuthenticators(AUTHENTICATORS)
+            .build()
+        prompt.authenticate(info)
+    }
+
+    LaunchedEffect(Unit) { showPrompt() }
+
+    Scaffold(containerColor = DarkBg) { pad ->
+        Column(
+            modifier = Modifier
+                .padding(pad)
+                .fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Surface(shape = CircleShape, color = Maroon) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.size(72.dp)
+                ) {
+                    Icon(
+                        IconLock,
+                        contentDescription = "Terkunci",
+                        tint = White,
+                        modifier = Modifier.size(30.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(14.dp))
+            Text(
+                "ExpeMemo terkunci",
+                color = White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp
+            )
+            Text(
+                "Gunakan sidik jari atau kunci layar untuk membuka",
+                fontSize = 11.sp,
+                color = GrayText,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+            if (errorText != null) {
+                Text(
+                    errorText!!,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                onClick = {
+                    errorText = null
+                    showPrompt()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = RedPrimary)
+            ) {
+                Text("Coba buka lagi", fontSize = 13.sp)
             }
         }
     }
