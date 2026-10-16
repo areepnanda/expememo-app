@@ -301,9 +301,9 @@ object Api {
             s
         }
 
-    fun fetch(url: String, token: String): String {
+    fun fetch(url: String, token: String, query: String): String {
         val sep = if (url.contains("?")) "&" else "?"
-        val full = url + sep + "token=" + enc(token) + "&months=24"
+        val full = url + sep + "token=" + enc(token) + "&" + query
         val conn = URL(full).openConnection() as HttpURLConnection
         conn.connectTimeout = 15000
         conn.readTimeout = 45000
@@ -474,6 +474,11 @@ fun periodLabel(start: LocalDate): String {
     return "$startPart – $endPart"
 }
 
+fun periodOptions(): List<String> {
+    val cur = periodStart(LocalDate.now().atStartOfDay())
+    return (0 until 24).map { cur.minusMonths(it.toLong()).toString() }
+}
+
 fun dayHeaderLabel(dt: LocalDateTime): String {
     val dayName = DAY_NAMES[dt.dayOfWeek.value - 1]
     return "$dayName, ${dt.dayOfMonth} ${MONTH_NAMES[dt.monthValue - 1]} ${dt.year}"
@@ -610,7 +615,9 @@ fun RowScope.BottomBarItem(
 fun App() {
     var rows by remember { mutableStateOf<List<Txn>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var selected by remember { mutableStateOf<String?>(null) }
+    var selected: String? by remember {
+        mutableStateOf<String?>(periodStart(LocalDate.now().atStartOfDay()).toString())
+    }
     var loading by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
     var detail by remember { mutableStateOf<Txn?>(null) }
@@ -658,6 +665,8 @@ fun App() {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    var fetchSeq by remember { mutableStateOf(0) }
+
     fun load() {
         val cfg = loadApiConfig(context)
         if (cfg == null) {
@@ -666,18 +675,22 @@ fun App() {
         }
         loading = true
         error = null
+        val sel = selected
+        val seq = ++fetchSeq
         scope.launch {
             try {
-                val body = withContext(Dispatchers.IO) { Api.fetch(cfg.url, cfg.token) }
-                val parsed = parseRows(body)
-                rows = parsed
-                if (selected == null && parsed.isNotEmpty()) {
-                    selected = parsed.maxOf { periodStart(it.dt) }.toString()
+                val query = if (sel == null) "months=24" else run {
+                    val start = LocalDate.parse(sel)
+                    val end = start.plusMonths(1).minusDays(1)
+                    "from=$start&to=$end"
                 }
+                val body = withContext(Dispatchers.IO) { Api.fetch(cfg.url, cfg.token, query) }
+                val parsed = parseRows(body)
+                if (seq == fetchSeq) rows = parsed
             } catch (e: Exception) {
-                error = e.message ?: "gagal memuat data"
+                if (seq == fetchSeq) error = e.message ?: "gagal memuat data"
             } finally {
-                loading = false
+                if (seq == fetchSeq) loading = false
             }
         }
     }
@@ -746,7 +759,10 @@ fun App() {
         ModalNavigationDrawer(
             drawerState = drawerState,
             drawerContent = {
-                ModalDrawerSheet(drawerContainerColor = DarkSurface) {
+                ModalDrawerSheet(
+                    modifier = Modifier.width(240.dp),
+                    drawerContainerColor = DarkSurface
+                ) {
                     Text(
                         "ExpeMemo",
                         fontWeight = FontWeight.Bold,
@@ -782,13 +798,12 @@ fun App() {
                 error = error,
                 rowsLoaded = rows != null,
                 shown = shown,
-                periods = rows
-                    ?.map { periodStart(it.dt).toString() }
-                    ?.distinct()
-                    ?.sortedDescending()
-                    ?: emptyList(),
+                periods = periodOptions(),
                 selectedPeriod = selected,
-                onPeriodChange = { selected = it },
+                onPeriodChange = {
+                    selected = it
+                    load()
+                },
                 searchQuery = searchQuery,
                 onSearchChange = { searchQuery = it },
                 bankFilter = bankFilter,
