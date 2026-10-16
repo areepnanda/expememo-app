@@ -4,12 +4,15 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -42,6 +45,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -57,12 +62,15 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SelectableDates
+import androidx.compose.material3.Switch
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -74,6 +82,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -105,10 +114,14 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneOffset
 import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.pow
@@ -174,8 +187,20 @@ private val IconLockOpen = makeIcon(
     "M12 17c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm6-9h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6h2c0-1.66 1.34-3 3-3s3 1.34 3 3v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm0 12H6V10h12v10z"
 )
 
+private val IconBackspace = makeIcon(
+    "Backspace",
+    "M22 3H7c-.69 0-1.23.35-1.59.88L0 12l5.41 8.11c.36.53.9.89 1.59.89h15c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-3 12.59L17.59 17 14 13.41 10.41 17 9 15.59 12.59 12 9 8.41 10.41 7 14 10.59 17.59 7 19 8.41 15.41 12 19 15.59z"
+)
+
 private const val PREFS_NAME = "expememo_prefs"
 private const val KEY_BIOMETRIC = "biometric_enabled"
+private const val KEY_LOCK_METHOD = "lock_method"
+private const val KEY_PIN_HASH = "pin_hash"
+private const val KEY_PIN_SALT = "pin_salt"
+private const val KEY_PIN_LENGTH = "pin_length"
+private const val LOCK_METHOD_BIOMETRIC = "biometric"
+private const val LOCK_METHOD_PIN = "pin"
+private const val LOCK_GRACE_MS = 2 * 60 * 1000L
 
 private val AUTHENTICATORS =
     BiometricManager.Authenticators.BIOMETRIC_WEAK or
@@ -195,6 +220,53 @@ fun setBiometricEnabled(context: Context, enabled: Boolean) {
         .putBoolean(KEY_BIOMETRIC, enabled)
         .apply()
 }
+
+fun lockMethod(context: Context): String =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_LOCK_METHOD, LOCK_METHOD_BIOMETRIC) ?: LOCK_METHOD_BIOMETRIC
+
+fun setLockMethod(context: Context, method: String) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_LOCK_METHOD, method)
+        .apply()
+}
+
+fun savedPin(context: Context): Pair<String, Int>? {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val hash = prefs.getString(KEY_PIN_HASH, null)
+    val len = prefs.getInt(KEY_PIN_LENGTH, 0)
+    return if (hash.isNullOrEmpty() || len < 4) null else hash to len
+}
+
+fun savePin(context: Context, pin: String) {
+    val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        .joinToString("") { "%02x".format(it) }
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_PIN_SALT, salt)
+        .putString(KEY_PIN_HASH, sha256Hex(salt + pin))
+        .putInt(KEY_PIN_LENGTH, pin.length)
+        .apply()
+}
+
+fun verifyPin(context: Context, pin: String): Boolean {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val hash = prefs.getString(KEY_PIN_HASH, null) ?: return false
+    val salt = prefs.getString(KEY_PIN_SALT, "") ?: ""
+    return hash == sha256Hex(salt + pin)
+}
+
+fun lockActive(context: Context): Boolean =
+    biometricEnabled(context) && when (lockMethod(context)) {
+        LOCK_METHOD_PIN -> savedPin(context) != null
+        else -> biometricAvailable(context)
+    }
+
+private fun sha256Hex(value: String): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray())
+        .joinToString("") { "%02x".format(it) }
 
 private const val KEY_API_URL = "api_url"
 private const val KEY_API_TOKEN = "api_token"
@@ -466,17 +538,31 @@ fun periodStart(dt: LocalDateTime): LocalDate {
     return if (dt.dayOfMonth >= 25) base else base.minusMonths(1)
 }
 
-fun periodLabel(start: LocalDate): String {
-    val end = start.plusMonths(1).minusDays(1)
+sealed interface PeriodSelection {
+    data class Monthly(val start: LocalDate) : PeriodSelection
+    data class Custom(val start: LocalDate, val end: LocalDate) : PeriodSelection
+    data object All : PeriodSelection
+}
+
+fun periodLabel(start: LocalDate): String =
+    rangeLabel(start, start.plusMonths(1).minusDays(1))
+
+fun rangeLabel(start: LocalDate, end: LocalDate): String {
     val startPart = start.dayOfMonth.toString() + " " + MONTH_NAMES[start.monthValue - 1] +
         (if (start.year != end.year) " " + start.year else "")
     val endPart = end.dayOfMonth.toString() + " " + MONTH_NAMES[end.monthValue - 1] + " " + end.year
     return "$startPart – $endPart"
 }
 
-fun periodOptions(): List<String> {
+fun selectionLabel(sel: PeriodSelection): String = when (sel) {
+    is PeriodSelection.Monthly -> periodLabel(sel.start)
+    is PeriodSelection.Custom -> rangeLabel(sel.start, sel.end)
+    PeriodSelection.All -> "Semua periode"
+}
+
+fun recentPeriodOptions(count: Int = 3): List<LocalDate> {
     val cur = periodStart(LocalDate.now().atStartOfDay())
-    return (0 until 24).map { cur.minusMonths(it.toLong()).toString() }
+    return (0 until count).map { cur.minusMonths(it.toLong()) }
 }
 
 fun dayHeaderLabel(dt: LocalDateTime): String {
@@ -615,9 +701,12 @@ fun RowScope.BottomBarItem(
 fun App() {
     var rows by remember { mutableStateOf<List<Txn>?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var selected: String? by remember {
-        mutableStateOf<String?>(periodStart(LocalDate.now().atStartOfDay()).toString())
+    var selected: PeriodSelection by remember {
+        mutableStateOf<PeriodSelection>(
+            PeriodSelection.Monthly(periodStart(LocalDate.now().atStartOfDay()))
+        )
     }
+    var showCustomPeriod by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
     var detail by remember { mutableStateOf<Txn?>(null) }
@@ -631,11 +720,8 @@ fun App() {
     var categoryFilter by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    var bioAvailable by remember { mutableStateOf(biometricAvailable(context)) }
-    var locked by remember {
-        mutableStateOf(bioAvailable && biometricEnabled(context))
-    }
-    var backgrounded by remember { mutableStateOf(false) }
+    var locked by remember { mutableStateOf(lockActive(context)) }
+    var lastStoppedAt by remember { mutableStateOf(0L) }
     var showSettings by remember { mutableStateOf(false) }
     var hasConfig by remember { mutableStateOf(loadApiConfig(context) != null) }
     var reloadTick by remember { mutableStateOf(0) }
@@ -645,7 +731,7 @@ fun App() {
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
-                backgrounded = true
+                lastStoppedAt = SystemClock.elapsedRealtime()
             }
             if (event == Lifecycle.Event.ON_RESUME) {
                 val f = pendingInstall
@@ -653,9 +739,12 @@ fun App() {
                     pendingInstall = null
                     installApk(context, f)
                 }
-                if (backgrounded) {
-                    backgrounded = false
-                    if (biometricAvailable(context) && biometricEnabled(context)) {
+                val stopped = lastStoppedAt
+                if (stopped > 0) {
+                    lastStoppedAt = 0
+                    if (SystemClock.elapsedRealtime() - stopped > LOCK_GRACE_MS &&
+                        lockActive(context)
+                    ) {
                         locked = true
                     }
                 }
@@ -679,10 +768,11 @@ fun App() {
         val seq = ++fetchSeq
         scope.launch {
             try {
-                val query = if (sel == null) "months=24" else run {
-                    val start = LocalDate.parse(sel)
-                    val end = start.plusMonths(1).minusDays(1)
-                    "from=$start&to=$end"
+                val query = when (sel) {
+                    is PeriodSelection.All -> "months=24"
+                    is PeriodSelection.Monthly ->
+                        "from=${sel.start}&to=${sel.start.plusMonths(1).minusDays(1)}"
+                    is PeriodSelection.Custom -> "from=${sel.start}&to=${sel.end}"
                 }
                 val body = withContext(Dispatchers.IO) { Api.fetch(cfg.url, cfg.token, query) }
                 val parsed = parseRows(body)
@@ -731,8 +821,18 @@ fun App() {
     BackHandler(enabled = detail == null && selectedCategory != null) { selectedCategory = null }
     BackHandler(enabled = showSettings && hasConfig) { showSettings = false }
 
+    val sel = selected
     val shown = rows
-        ?.filter { selected == null || periodStart(it.dt).toString() == selected }
+        ?.filter {
+            val d = it.dt.toLocalDate()
+            when (sel) {
+                is PeriodSelection.All -> true
+                is PeriodSelection.Monthly ->
+                    !d.isBefore(sel.start) && d.isBefore(sel.start.plusMonths(1))
+                is PeriodSelection.Custom ->
+                    !d.isBefore(sel.start) && !d.isAfter(sel.end)
+            }
+        }
         ?.sortedByDescending { it.dt }
         ?: emptyList()
 
@@ -798,12 +898,13 @@ fun App() {
                 error = error,
                 rowsLoaded = rows != null,
                 shown = shown,
-                periods = periodOptions(),
+                periods = recentPeriodOptions(),
                 selectedPeriod = selected,
                 onPeriodChange = {
                     selected = it
                     load()
                 },
+                onPickCustomPeriod = { showCustomPeriod = true },
                 searchQuery = searchQuery,
                 onSearchChange = { searchQuery = it },
                 bankFilter = bankFilter,
@@ -878,6 +979,82 @@ fun App() {
             confirmButton = { }
         )
     }
+
+    if (showCustomPeriod) {
+        val current = selected
+        CustomPeriodDialog(
+            initialStart = (current as? PeriodSelection.Custom)?.start,
+            initialEnd = (current as? PeriodSelection.Custom)?.end,
+            onDismiss = { showCustomPeriod = false },
+            onConfirm = { start, end ->
+                showCustomPeriod = false
+                selected = PeriodSelection.Custom(start, end)
+                load()
+            }
+        )
+    }
+}
+
+private fun LocalDate.toUtcMillis(): Long =
+    atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+
+private fun Long.toLocalDateUtc(): LocalDate =
+    Instant.ofEpochMilli(this).atZone(ZoneOffset.UTC).toLocalDate()
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CustomPeriodDialog(
+    initialStart: LocalDate?,
+    initialEnd: LocalDate?,
+    onDismiss: () -> Unit,
+    onConfirm: (LocalDate, LocalDate) -> Unit
+) {
+    val today = LocalDate.now()
+    val minDate = today.minusYears(3)
+    val state = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = initialStart?.toUtcMillis(),
+        initialSelectedEndDateMillis = initialEnd?.toUtcMillis(),
+        initialDisplayedMonthMillis = (initialStart ?: today).toUtcMillis(),
+        yearRange = IntRange(minDate.year, today.year + 1),
+        selectableDates = object : SelectableDates {
+            override fun isSelectableDate(utcTimeMillis: Long): Boolean =
+                utcTimeMillis >= minDate.toUtcMillis()
+        }
+    )
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                enabled = state.selectedStartDateMillis != null &&
+                    state.selectedEndDateMillis != null,
+                onClick = {
+                    val s = state.selectedStartDateMillis
+                    val e = state.selectedEndDateMillis
+                    if (s != null && e != null) onConfirm(s.toLocalDateUtc(), e.toLocalDateUtc())
+                }
+            ) { Text("Pilih") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Batal") }
+        }
+    ) {
+        DateRangePicker(
+            state = state,
+            showModeToggle = false,
+            title = {
+                Text(
+                    "Pilih rentang periode",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = White,
+                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp)
+                )
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(460.dp)
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -889,9 +1066,10 @@ fun MainScreen(
     error: String?,
     rowsLoaded: Boolean,
     shown: List<Txn>,
-    periods: List<String>,
-    selectedPeriod: String?,
-    onPeriodChange: (String?) -> Unit,
+    periods: List<LocalDate>,
+    selectedPeriod: PeriodSelection,
+    onPeriodChange: (PeriodSelection) -> Unit,
+    onPickCustomPeriod: () -> Unit,
     searchQuery: String,
     onSearchChange: (String) -> Unit,
     bankFilter: String?,
@@ -919,8 +1097,7 @@ fun MainScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                if (selectedPeriod == null) "Semua periode"
-                                else periodLabel(LocalDate.parse(selectedPeriod)),
+                                selectionLabel(selectedPeriod),
                                 color = White,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
@@ -938,9 +1115,9 @@ fun MainScreen(
                         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
                             periods.forEach { p ->
                                 DropdownMenuItem(
-                                    text = { Text(periodLabel(LocalDate.parse(p))) },
+                                    text = { Text(periodLabel(p)) },
                                     onClick = {
-                                        onPeriodChange(p)
+                                        onPeriodChange(PeriodSelection.Monthly(p))
                                         open = false
                                     }
                                 )
@@ -949,9 +1126,19 @@ fun MainScreen(
                             HorizontalDivider()
 
                             DropdownMenuItem(
+                                text = { Text("Periode custom") },
+                                onClick = {
+                                    open = false
+                                    onPickCustomPeriod()
+                                }
+                            )
+
+                            HorizontalDivider()
+
+                            DropdownMenuItem(
                                 text = { Text("Semua periode") },
                                 onClick = {
-                                    onPeriodChange(null)
+                                    onPeriodChange(PeriodSelection.All)
                                     open = false
                                 }
                             )
@@ -960,26 +1147,31 @@ fun MainScreen(
                 },
                 actions = {
                     val ctx = LocalContext.current
-                    val bioAvailable = remember { biometricAvailable(ctx) }
-                    var bioOn by remember { mutableStateOf(biometricEnabled(ctx)) }
-                    if (bioAvailable) {
-                        IconButton(
-                            onClick = {
-                                val newValue = !bioOn
-                                setBiometricEnabled(ctx, newValue)
-                                bioOn = newValue
-                            },
-                            modifier = Modifier.size(34.dp)
-                        ) {
-                            Icon(
-                                if (bioOn) IconLock else IconLockOpen,
-                                contentDescription =
-                                    if (bioOn) "Matikan kunci sidik jari"
-                                    else "Aktifkan kunci sidik jari",
-                                tint = if (bioOn) White else GrayText,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
+                    var lockOn by remember { mutableStateOf(biometricEnabled(ctx)) }
+                    IconButton(
+                        onClick = {
+                            if (lockOn) {
+                                setBiometricEnabled(ctx, false)
+                                lockOn = false
+                            } else {
+                                if (!lockActive(ctx) && biometricAvailable(ctx)) {
+                                    setLockMethod(ctx, LOCK_METHOD_BIOMETRIC)
+                                }
+                                val ok = lockActive(ctx)
+                                setBiometricEnabled(ctx, ok)
+                                lockOn = ok
+                            }
+                        },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            if (lockOn) IconLock else IconLockOpen,
+                            contentDescription =
+                                if (lockOn) "Matikan kunci aplikasi"
+                                else "Aktifkan kunci aplikasi",
+                            tint = if (lockOn) White else GrayText,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
             )
@@ -1785,11 +1977,15 @@ fun CategoryScreen(
 
 @Composable
 fun LockScreen(onUnlocked: () -> Unit) {
-    val activity = LocalContext.current as? FragmentActivity
+    val context = LocalContext.current
+    val bioAvailable = remember { biometricAvailable(context) }
+    var usePin by remember {
+        mutableStateOf(lockMethod(context) == LOCK_METHOD_PIN && savedPin(context) != null)
+    }
     var errorText by remember { mutableStateOf<String?>(null) }
 
     fun showPrompt() {
-        val frag = activity ?: return
+        val frag = context as? FragmentActivity ?: return
         val prompt = BiometricPrompt(
             frag,
             ContextCompat.getMainExecutor(frag),
@@ -1817,7 +2013,9 @@ fun LockScreen(onUnlocked: () -> Unit) {
         prompt.authenticate(info)
     }
 
-    LaunchedEffect(Unit) { showPrompt() }
+    LaunchedEffect(usePin) {
+        if (!usePin) showPrompt()
+    }
 
     Scaffold(containerColor = DarkBg) { pad ->
         Column(
@@ -1847,12 +2045,26 @@ fun LockScreen(onUnlocked: () -> Unit) {
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp
             )
-            Text(
-                "Gunakan sidik jari atau kunci layar untuk membuka",
-                fontSize = 11.sp,
-                color = GrayText,
-                modifier = Modifier.padding(top = 4.dp)
-            )
+            if (usePin) {
+                Text(
+                    "Masukkan PIN untuk membuka",
+                    fontSize = 11.sp,
+                    color = GrayText,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+                PinEntryPad(
+                    pinLength = savedPin(context)?.second ?: 6,
+                    onError = { errorText = it },
+                    onUnlocked = onUnlocked
+                )
+            } else {
+                Text(
+                    "Gunakan sidik jari atau kunci layar untuk membuka",
+                    fontSize = 11.sp,
+                    color = GrayText,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
+            }
             if (errorText != null) {
                 Text(
                     errorText!!,
@@ -1861,15 +2073,124 @@ fun LockScreen(onUnlocked: () -> Unit) {
                     modifier = Modifier.padding(top = 8.dp)
                 )
             }
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(
-                onClick = {
-                    errorText = null
-                    showPrompt()
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = RedPrimary)
-            ) {
-                Text("Coba buka lagi", fontSize = 13.sp)
+            if (usePin) {
+                if (bioAvailable) {
+                    TextButton(
+                        onClick = {
+                            errorText = null
+                            usePin = false
+                        }
+                    ) {
+                        Text("Gunakan sidik jari", fontSize = 13.sp, color = RedPrimary)
+                    }
+                }
+            } else {
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(
+                    onClick = {
+                        errorText = null
+                        showPrompt()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RedPrimary)
+                ) {
+                    Text("Coba buka lagi", fontSize = 13.sp)
+                }
+                if (savedPin(context) != null) {
+                    TextButton(
+                        onClick = {
+                            errorText = null
+                            usePin = true
+                        }
+                    ) {
+                        Text("Gunakan PIN", fontSize = 13.sp, color = GrayText)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PinEntryPad(pinLength: Int, onUnlocked: () -> Unit, onError: (String) -> Unit) {
+    val context = LocalContext.current
+    var entered by remember { mutableStateOf("") }
+
+    fun onKey(digit: String) {
+        if (entered.length >= pinLength) return
+        entered += digit
+        if (entered.length == pinLength) {
+            if (verifyPin(context, entered)) {
+                onUnlocked()
+            } else {
+                entered = ""
+                onError("PIN salah")
+            }
+        }
+    }
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.padding(top = 16.dp)
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            repeat(pinLength) { i ->
+                val filled = i < entered.length
+                Box(
+                    modifier = Modifier
+                        .size(12.dp)
+                        .background(if (filled) RedPrimary else Color.Transparent, CircleShape)
+                        .border(
+                            1.5.dp,
+                            if (filled) RedPrimary else GrayText,
+                            CircleShape
+                        )
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(18.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            listOf(
+                listOf("1", "2", "3"),
+                listOf("4", "5", "6"),
+                listOf("7", "8", "9"),
+                listOf("", "0", "DEL")
+            ).forEach { rowKeys ->
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    rowKeys.forEach { key ->
+                        when {
+                            key.isEmpty() -> Spacer(modifier = Modifier.size(62.dp))
+                            key == "DEL" -> Box(
+                                modifier = Modifier
+                                    .size(62.dp)
+                                    .clip(CircleShape)
+                                    .clickable { entered = entered.dropLast(1) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    IconBackspace,
+                                    contentDescription = "Hapus",
+                                    tint = GrayText,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            else -> Box(
+                                modifier = Modifier
+                                    .size(62.dp)
+                                    .clip(CircleShape)
+                                    .background(DarkSurface)
+                                    .clickable { onKey(key) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    key,
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = White
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1966,6 +2287,12 @@ fun SettingsScreen(
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
     var error by remember { mutableStateOf<String?>(null) }
+    val ctx = LocalContext.current
+    val bioAvailable = remember { biometricAvailable(ctx) }
+    var lockOn by remember { mutableStateOf(biometricEnabled(ctx)) }
+    var method by remember { mutableStateOf(lockMethod(ctx)) }
+    var pendingEnable by remember { mutableStateOf(false) }
+    var showPinDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = DarkBg,
@@ -2053,7 +2380,95 @@ fun SettingsScreen(
                 fontSize = 11.sp,
                 color = GrayText
             )
+            Spacer(modifier = Modifier.height(8.dp))
+            HorizontalDivider(color = CardBorder)
+            Text(
+                "Kunci Aplikasi",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = White
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Aktifkan kunci aplikasi", fontSize = 13.sp, color = White)
+                Spacer(modifier = Modifier.weight(1f))
+                Switch(
+                    checked = lockOn,
+                    onCheckedChange = { want ->
+                        when {
+                            !want -> {
+                                setBiometricEnabled(ctx, false)
+                                lockOn = false
+                            }
+                            lockActive(ctx) -> {
+                                setBiometricEnabled(ctx, true)
+                                lockOn = true
+                            }
+                            else -> {
+                                pendingEnable = true
+                                showPinDialog = true
+                            }
+                        }
+                    }
+                )
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text("Metode buka:", fontSize = 12.sp, color = GrayText)
+                FilterChip(
+                    selected = method == LOCK_METHOD_BIOMETRIC,
+                    enabled = bioAvailable,
+                    onClick = {
+                        method = LOCK_METHOD_BIOMETRIC
+                        setLockMethod(ctx, LOCK_METHOD_BIOMETRIC)
+                    },
+                    label = { Text("Sidik jari", fontSize = 12.sp) }
+                )
+                FilterChip(
+                    selected = method == LOCK_METHOD_PIN,
+                    onClick = {
+                        if (savedPin(ctx) != null) {
+                            method = LOCK_METHOD_PIN
+                            setLockMethod(ctx, LOCK_METHOD_PIN)
+                        } else {
+                            showPinDialog = true
+                        }
+                    },
+                    label = { Text("PIN", fontSize = 12.sp) }
+                )
+            }
+            if (method == LOCK_METHOD_PIN && savedPin(ctx) != null) {
+                OutlinedButton(
+                    onClick = { showPinDialog = true },
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = RedPrimary)
+                ) {
+                    Text("Ubah PIN", fontSize = 13.sp)
+                }
+            }
         }
+    }
+    if (showPinDialog) {
+        PinSetupDialog(
+            onDismiss = {
+                showPinDialog = false
+                pendingEnable = false
+            },
+            onSave = { pin ->
+                savePin(ctx, pin)
+                setLockMethod(ctx, LOCK_METHOD_PIN)
+                if (pendingEnable) {
+                    setBiometricEnabled(ctx, true)
+                    lockOn = true
+                    pendingEnable = false
+                }
+                method = LOCK_METHOD_PIN
+                showPinDialog = false
+            }
+        )
     }
 }
 
@@ -2072,4 +2487,70 @@ fun ConfigStatusRow(label: String, saved: Boolean) {
             color = if (saved) RedOnContainer else GrayText
         )
     }
+}
+
+@Composable
+fun PinSetupDialog(onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var pin by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Atur PIN") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "PIN terdiri dari 4–6 angka dan dipakai untuk membuka aplikasi.",
+                    fontSize = 12.sp,
+                    color = GrayText
+                )
+                OutlinedTextField(
+                    value = pin,
+                    onValueChange = {
+                        if (it.length <= 6 && it.all { ch -> ch.isDigit() }) {
+                            pin = it
+                            error = null
+                        }
+                    },
+                    label = { Text("PIN baru", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 14.sp, color = White),
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
+                )
+                OutlinedTextField(
+                    value = confirm,
+                    onValueChange = {
+                        if (it.length <= 6 && it.all { ch -> ch.isDigit() }) {
+                            confirm = it
+                            error = null
+                        }
+                    },
+                    label = { Text("Konfirmasi PIN", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 14.sp, color = White),
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
+                )
+                if (error != null) {
+                    Text(error!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    when {
+                        pin.length < 4 -> error = "PIN minimal 4 angka"
+                        pin != confirm -> error = "Konfirmasi PIN tidak sama"
+                        else -> onSave(pin)
+                    }
+                }
+            ) { Text("Simpan", color = RedPrimary) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Batal") }
+        }
+    )
 }
