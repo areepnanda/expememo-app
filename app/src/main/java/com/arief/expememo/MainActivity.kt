@@ -31,14 +31,18 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -48,6 +52,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -56,6 +63,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -78,6 +86,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -94,6 +104,7 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.text.DecimalFormat
 import java.text.DecimalFormatSymbols
 import java.time.LocalDate
@@ -185,6 +196,30 @@ fun setBiometricEnabled(context: Context, enabled: Boolean) {
         .apply()
 }
 
+private const val KEY_API_URL = "api_url"
+private const val KEY_API_TOKEN = "api_token"
+
+data class ApiConfig(val url: String, val token: String)
+
+private fun apiPrefs(context: Context) =
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+fun apiValueSaved(context: Context, key: String): Boolean =
+    !apiPrefs(context).getString(key, "")?.trim().isNullOrEmpty()
+
+fun loadApiConfig(context: Context): ApiConfig? {
+    val url = apiPrefs(context).getString(KEY_API_URL, "")?.trim().orEmpty()
+    val token = apiPrefs(context).getString(KEY_API_TOKEN, "")?.trim().orEmpty()
+    return if (url.isBlank() || token.isBlank()) null else ApiConfig(url, token)
+}
+
+fun saveApiConfig(context: Context, url: String, token: String) {
+    apiPrefs(context).edit()
+        .putString(KEY_API_URL, url)
+        .putString(KEY_API_TOKEN, token)
+        .apply()
+}
+
 private val CHART_COLORS = listOf(
     Color(0xFFE53935), Color(0xFFFB8C00), Color(0xFFFDD835),
     Color(0xFF43A047), Color(0xFF00ACC1), Color(0xFF1E88E5),
@@ -259,11 +294,17 @@ fun bankAvatar(account: String): BankAvatar = when {
 }
 
 object Api {
-    private const val BASE =
-        "https://script.google.com/macros/s/REDACTED/exec"
+    private fun enc(s: String): String =
+        try {
+            URLEncoder.encode(s, "UTF-8")
+        } catch (_: Exception) {
+            s
+        }
 
-    fun fetch(): String {
-        val conn = URL("$BASE?token=${BuildConfig.EXPEMEMO_TOKEN}&months=24").openConnection() as HttpURLConnection
+    fun fetch(url: String, token: String): String {
+        val sep = if (url.contains("?")) "&" else "?"
+        val full = url + sep + "token=" + enc(token) + "&months=24"
+        val conn = URL(full).openConnection() as HttpURLConnection
         conn.connectTimeout = 15000
         conn.readTimeout = 45000
         try {
@@ -457,6 +498,7 @@ fun categoryStats(txs: List<Txn>): List<CategoryStat> =
 @Composable
 fun CompactTopBar(
     onBack: (() -> Unit)? = null,
+    onMenu: (() -> Unit)? = null,
     title: @Composable () -> Unit,
     actions: @Composable () -> Unit = {}
 ) {
@@ -484,10 +526,19 @@ fun CompactTopBar(
             Row(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(start = if (onBack != null) 4.dp else 16.dp, end = 4.dp),
+                    .padding(start = if (onBack != null || onMenu != null) 4.dp else 16.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (onBack != null) {
+                if (onMenu != null) {
+                    IconButton(onClick = onMenu, modifier = Modifier.size(34.dp)) {
+                        Icon(
+                            Icons.Filled.Menu,
+                            contentDescription = "Menu",
+                            tint = White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                } else if (onBack != null) {
                     IconButton(onClick = onBack, modifier = Modifier.size(34.dp)) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
@@ -578,6 +629,10 @@ fun App() {
         mutableStateOf(bioAvailable && biometricEnabled(context))
     }
     var backgrounded by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var hasConfig by remember { mutableStateOf(loadApiConfig(context) != null) }
+    var reloadTick by remember { mutableStateOf(0) }
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
 
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -604,11 +659,16 @@ fun App() {
     }
 
     fun load() {
+        val cfg = loadApiConfig(context)
+        if (cfg == null) {
+            error = "URL & token API belum diatur. Buka menu ☰ → Pengaturan."
+            return
+        }
         loading = true
         error = null
         scope.launch {
             try {
-                val body = withContext(Dispatchers.IO) { Api.fetch() }
+                val body = withContext(Dispatchers.IO) { Api.fetch(cfg.url, cfg.token) }
                 val parsed = parseRows(body)
                 rows = parsed
                 if (selected == null && parsed.isNotEmpty()) {
@@ -622,8 +682,21 @@ fun App() {
         }
     }
 
+    fun saveSettings(newUrl: String, newToken: String): String? {
+        val cur = loadApiConfig(context)
+        val url = newUrl.ifBlank { cur?.url ?: "" }
+        val token = newToken.ifBlank { cur?.token ?: "" }
+        if (url.isBlank() || token.isBlank()) return "URL dan token wajib diisi"
+        if (!url.startsWith("https://", true)) return "URL harus diawali https://"
+        val changed = cur?.url != url || cur?.token != token
+        saveApiConfig(context, url, token)
+        hasConfig = true
+        showSettings = false
+        if (changed) reloadTick++
+        return null
+    }
+
     LaunchedEffect(Unit) {
-        load()
         val update = runCatching {
             withContext(Dispatchers.IO) { Updater.check(BuildConfig.VERSION_CODE) }
         }.getOrNull()
@@ -633,8 +706,17 @@ fun App() {
         }
     }
 
+    LaunchedEffect(hasConfig) {
+        if (!hasConfig) showSettings = true
+    }
+
+    LaunchedEffect(hasConfig, reloadTick) {
+        if (hasConfig) load()
+    }
+
     BackHandler(enabled = detail != null) { detail = null }
     BackHandler(enabled = detail == null && selectedCategory != null) { selectedCategory = null }
+    BackHandler(enabled = showSettings && hasConfig) { showSettings = false }
 
     val shown = rows
         ?.filter { selected == null || periodStart(it.dt).toString() == selected }
@@ -643,6 +725,14 @@ fun App() {
 
     if (locked) {
         LockScreen(onUnlocked = { locked = false })
+    } else if (showSettings) {
+        SettingsScreen(
+            urlSaved = apiValueSaved(context, KEY_API_URL),
+            tokenSaved = apiValueSaved(context, KEY_API_TOKEN),
+            allowBack = hasConfig,
+            onBack = { showSettings = false },
+            onSave = { u, t -> saveSettings(u, t) }
+        )
     } else if (detail != null) {
         DetailScreen(detail!!) { detail = null }
     } else if (selectedCategory != null) {
@@ -653,30 +743,64 @@ fun App() {
             onOpenTxn = { detail = it }
         )
     } else {
-        MainScreen(
-            tab = tab,
-            onTabChange = { tab = it },
-            loading = loading,
-            error = error,
-            rowsLoaded = rows != null,
-            shown = shown,
-            periods = rows
-                ?.map { periodStart(it.dt).toString() }
-                ?.distinct()
-                ?.sortedDescending()
-                ?: emptyList(),
-            selectedPeriod = selected,
-            onPeriodChange = { selected = it },
-            searchQuery = searchQuery,
-            onSearchChange = { searchQuery = it },
-            bankFilter = bankFilter,
-            onBankFilterChange = { bankFilter = it },
-            categoryFilter = categoryFilter,
-            onCategoryFilterChange = { categoryFilter = it },
-            onReload = { load() },
-            onOpenTxn = { detail = it },
-            onOpenCategory = { selectedCategory = it }
-        )
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet(drawerContainerColor = DarkSurface) {
+                    Text(
+                        "ExpeMemo",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        color = White,
+                        modifier = Modifier.padding(16.dp)
+                    )
+                    HorizontalDivider(color = CardBorder)
+                    NavigationDrawerItem(
+                        icon = {
+                            Icon(
+                                Icons.Filled.Settings,
+                                contentDescription = null,
+                                tint = GrayText,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        label = { Text("Pengaturan", fontSize = 13.sp, color = White) },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            showSettings = true
+                        },
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                }
+            }
+        ) {
+            MainScreen(
+                tab = tab,
+                onTabChange = { tab = it },
+                loading = loading,
+                error = error,
+                rowsLoaded = rows != null,
+                shown = shown,
+                periods = rows
+                    ?.map { periodStart(it.dt).toString() }
+                    ?.distinct()
+                    ?.sortedDescending()
+                    ?: emptyList(),
+                selectedPeriod = selected,
+                onPeriodChange = { selected = it },
+                searchQuery = searchQuery,
+                onSearchChange = { searchQuery = it },
+                bankFilter = bankFilter,
+                onBankFilterChange = { bankFilter = it },
+                categoryFilter = categoryFilter,
+                onCategoryFilterChange = { categoryFilter = it },
+                onReload = { load() },
+                onOpenTxn = { detail = it },
+                onOpenCategory = { selectedCategory = it },
+                onOpenDrawer = { scope.launch { drawerState.open() } }
+            )
+        }
     }
 
     if (updateUrl != null) {
@@ -761,7 +885,8 @@ fun MainScreen(
     onCategoryFilterChange: (String?) -> Unit,
     onReload: () -> Unit,
     onOpenTxn: (Txn) -> Unit,
-    onOpenCategory: (String) -> Unit
+    onOpenCategory: (String) -> Unit,
+    onOpenDrawer: () -> Unit
 ) {
     val stats = categoryStats(shown)
 
@@ -769,6 +894,7 @@ fun MainScreen(
         containerColor = DarkBg,
         topBar = {
             CompactTopBar(
+                onMenu = onOpenDrawer,
                 title = {
                     var open by remember { mutableStateOf(false) }
 
@@ -1810,6 +1936,125 @@ fun DetailRow(label: String, value: String) {
             fontWeight = FontWeight.Medium,
             color = White,
             modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+fun SettingsScreen(
+    urlSaved: Boolean,
+    tokenSaved: Boolean,
+    allowBack: Boolean,
+    onBack: () -> Unit,
+    onSave: (String, String) -> String?
+) {
+    var url by remember { mutableStateOf("") }
+    var token by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Scaffold(
+        containerColor = DarkBg,
+        topBar = {
+            CompactTopBar(
+                onBack = if (allowBack) onBack else null,
+                title = {
+                    Text(
+                        "Pengaturan",
+                        color = White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            )
+        }
+    ) { pad ->
+        Column(
+            modifier = Modifier
+                .padding(pad)
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                "Koneksi Google Apps Script",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = White
+            )
+            ConfigStatusRow("URL", urlSaved)
+            ConfigStatusRow("Token", tokenSaved)
+            OutlinedTextField(
+                value = url,
+                onValueChange = {
+                    url = it
+                    error = null
+                },
+                label = { Text("URL", fontSize = 12.sp, color = GrayText) },
+                placeholder = {
+                    Text(
+                        "https://script.google.com/macros/s/…/exec",
+                        fontSize = 12.sp,
+                        color = GrayText
+                    )
+                },
+                singleLine = true,
+                textStyle = TextStyle(fontSize = 13.sp, color = White),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = token,
+                onValueChange = {
+                    token = it
+                    error = null
+                },
+                label = { Text("Token", fontSize = 12.sp, color = GrayText) },
+                singleLine = true,
+                textStyle = TextStyle(fontSize = 13.sp, color = White),
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (error != null) {
+                Text(
+                    error!!,
+                    color = MaterialTheme.colorScheme.error,
+                    fontSize = 12.sp
+                )
+            }
+            Button(
+                onClick = {
+                    val err = onSave(url.trim(), token.trim())
+                    if (err != null) error = err
+                },
+                enabled = url.isNotBlank() || token.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = RedPrimary),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Simpan", fontSize = 13.sp)
+            }
+            Text(
+                "Isi minimal satu kolom untuk menyimpan. Kolom yang dikosongkan tidak diubah. " +
+                    "Nilai yang tersimpan tidak dapat dilihat kembali.",
+                fontSize = 11.sp,
+                color = GrayText
+            )
+        }
+    }
+}
+
+@Composable
+fun ConfigStatusRow(label: String, saved: Boolean) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, fontSize = 12.sp, color = GrayText)
+        Spacer(modifier = Modifier.weight(1f))
+        Text(
+            if (saved) "tersimpan" else "belum diatur",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            color = if (saved) RedOnContainer else GrayText
         )
     }
 }

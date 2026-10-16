@@ -12,13 +12,8 @@ android {
         applicationId = "com.arief.expememo"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "1.11"
-        buildConfigField(
-            "String",
-            "EXPEMEMO_TOKEN",
-            "\"${findProperty("EXPEMEMO_TOKEN") ?: ""}\""
-        )
+        versionCode = 13
+        versionName = "1.12"
     }
 
     buildTypes {
