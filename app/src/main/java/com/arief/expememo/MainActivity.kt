@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -81,6 +82,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -756,6 +758,8 @@ fun App() {
     var hasConfig by remember { mutableStateOf(loadApiConfig(context) != null) }
     var reloadTick by remember { mutableStateOf(0) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val txnListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val catListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -915,6 +919,7 @@ fun App() {
         CategoryScreen(
             stat = categoryStats(shown).firstOrNull { it.name == selectedCategory }
                 ?: CategoryStat(selectedCategory ?: "", "", 0.0, 0, emptyList()),
+            listState = catListState,
             onBack = { selectedCategory = null },
             onOpenTxn = { detail = it }
         )
@@ -956,6 +961,7 @@ fun App() {
         ) {
             MainScreen(
                 tab = tab,
+                txnListState = txnListState,
                 onTabChange = { tab = it },
                 loading = loading,
                 error = error,
@@ -1148,6 +1154,7 @@ fun CustomPeriodDialog(
 @Composable
 fun MainScreen(
     tab: Int,
+    txnListState: LazyListState,
     onTabChange: (Int) -> Unit,
     loading: Boolean,
     error: String?,
@@ -1283,6 +1290,7 @@ fun MainScreen(
                         error = error,
                         rowsLoaded = rowsLoaded,
                         shown = shown,
+                        listState = txnListState,
                         searchQuery = searchQuery,
                         onSearchChange = onSearchChange,
                         bankFilter = bankFilter,
@@ -1310,6 +1318,7 @@ fun TransactionTab(
     error: String?,
     rowsLoaded: Boolean,
     shown: List<Txn>,
+    listState: LazyListState,
     searchQuery: String,
     onSearchChange: (String) -> Unit,
     bankFilter: String?,
@@ -1454,6 +1463,7 @@ fun TransactionTab(
                     }
                     HorizontalDivider(color = CardBorder)
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier.weight(1f),
                         contentPadding = PaddingValues(bottom = 16.dp)
                     ) {
@@ -1981,6 +1991,7 @@ fun TxnRow(t: Txn, onClick: () -> Unit) {
 @Composable
 fun CategoryScreen(
     stat: CategoryStat,
+    listState: LazyListState,
     onBack: () -> Unit,
     onOpenTxn: (Txn) -> Unit
 ) {
@@ -2050,6 +2061,7 @@ fun CategoryScreen(
                 }
             } else {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 16.dp)
                 ) {
