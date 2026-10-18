@@ -32,9 +32,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -192,6 +194,11 @@ private val IconBackspace = makeIcon(
     "M22 3H7c-.69 0-1.23.35-1.59.88L0 12l5.41 8.11c.36.53.9.89 1.59.89h15c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-3 12.59L17.59 17 14 13.41 10.41 17 9 15.59 12.59 12 9 8.41 10.41 7 14 10.59 17.59 7 19 8.41 15.41 12 19 15.59z"
 )
 
+private val IconEdit = makeIcon(
+    "Edit",
+    "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+)
+
 private const val PREFS_NAME = "expememo_prefs"
 private const val KEY_BIOMETRIC = "biometric_enabled"
 private const val KEY_LOCK_METHOD = "lock_method"
@@ -326,6 +333,7 @@ class MainActivity : FragmentActivity() {
 }
 
 data class Txn(
+    val id: String,
     val dt: LocalDateTime,
     val account: String,
     val category: String,
@@ -384,6 +392,26 @@ object Api {
         } finally {
             conn.disconnect()
         }
+    }
+
+    fun update(
+        url: String,
+        token: String,
+        id: String,
+        category: String,
+        subcategory: String,
+        note: String,
+        amount: Double,
+        description: String
+    ): String {
+        val query = "action=update" +
+            "&id=" + enc(id) +
+            "&category=" + enc(category) +
+            "&subcategory=" + enc(subcategory) +
+            "&note=" + enc(note) +
+            "&amount=" + amount +
+            "&description=" + enc(description)
+        return fetch(url, token, query)
     }
 }
 
@@ -486,6 +514,7 @@ fun parseRows(json: String): List<Txn> {
             val dt = runCatching { LocalDateTime.parse(o.getString("date")) }.getOrNull()
                 ?: return@mapNotNull null
             Txn(
+                id = o.optString("id", "").trim(),
                 dt = dt,
                 account = o.getString("account"),
                 category = o.getString("category").trim(),
@@ -710,6 +739,7 @@ fun App() {
     var loading by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(0) }
     var detail by remember { mutableStateOf<Txn?>(null) }
+    var editingTxn by remember { mutableStateOf<Txn?>(null) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     var updateUrl by remember { mutableStateOf<String?>(null) }
     var updateCode by remember { mutableStateOf<Int?>(null) }
@@ -821,6 +851,33 @@ fun App() {
     BackHandler(enabled = detail == null && selectedCategory != null) { selectedCategory = null }
     BackHandler(enabled = showSettings && hasConfig) { showSettings = false }
 
+    val saveTxnEdit: suspend (Txn) -> String? = { updated ->
+        val cfg = loadApiConfig(context)
+        when {
+            cfg == null -> "URL & token API belum diatur"
+            else -> try {
+                val body = withContext(Dispatchers.IO) {
+                    Api.update(
+                        url = cfg.url,
+                        token = cfg.token,
+                        id = updated.id,
+                        category = updated.category,
+                        subcategory = updated.subcategory,
+                        note = updated.note,
+                        amount = updated.amount,
+                        description = updated.description
+                    )
+                }
+                val obj = JSONObject(body)
+                if (!obj.optBoolean("ok", false)) {
+                    obj.optString("error", "").ifBlank { "gagal menyimpan" }
+                } else null
+            } catch (e: Exception) {
+                e.message?.ifBlank { null } ?: "gagal menyimpan"
+            }
+        }
+    }
+
     val sel = selected
     val shown = rows
         ?.filter {
@@ -847,7 +904,13 @@ fun App() {
             onSave = { u, t -> saveSettings(u, t) }
         )
     } else if (detail != null) {
-        DetailScreen(detail!!) { detail = null }
+        DetailScreen(
+            t = detail!!,
+            onBack = { detail = null },
+            onEdit = if (detail!!.id.isNotBlank()) {
+                { editingTxn = detail }
+            } else null
+        )
     } else if (selectedCategory != null) {
         CategoryScreen(
             stat = categoryStats(shown).firstOrNull { it.name == selectedCategory }
@@ -977,6 +1040,30 @@ fun App() {
                 }
             },
             confirmButton = { }
+        )
+    }
+
+    if (editingTxn != null) {
+        EditTxnDialog(
+            txn = editingTxn!!,
+            categories = rows
+                ?.map { it.category }
+                ?.filter { it.isNotBlank() }
+                ?.distinct()
+                ?.sorted()
+                ?: emptyList(),
+            onDismiss = { editingTxn = null },
+            onSave = saveTxnEdit,
+            onSaved = { updated ->
+                val newIcon = rows
+                    ?.filter { it.category.equals(updated.category, ignoreCase = true) }
+                    ?.firstOrNull { it.icon.isNotBlank() }?.icon ?: ""
+                val fixed = updated.copy(icon = newIcon)
+                rows = rows?.map { if (it.id == fixed.id) fixed else it }
+                if (detail?.id == fixed.id) detail = fixed
+                editingTxn = null
+                load()
+            }
         )
     }
 
@@ -2197,7 +2284,7 @@ fun PinEntryPad(pinLength: Int, onUnlocked: () -> Unit, onError: (String) -> Uni
 }
 
 @Composable
-fun DetailScreen(t: Txn, onBack: () -> Unit) {
+fun DetailScreen(t: Txn, onBack: () -> Unit, onEdit: (() -> Unit)? = null) {
     Scaffold(
         containerColor = DarkBg,
         topBar = {
@@ -2210,6 +2297,18 @@ fun DetailScreen(t: Txn, onBack: () -> Unit) {
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Medium
                     )
+                },
+                actions = {
+                    if (onEdit != null) {
+                        IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
+                            Icon(
+                                IconEdit,
+                                contentDescription = "Edit transaksi",
+                                tint = White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
                 }
             )
         }
@@ -2274,6 +2373,179 @@ fun DetailRow(label: String, value: String) {
             modifier = Modifier.weight(1f)
         )
     }
+}
+
+@Composable
+fun EditTxnDialog(
+    txn: Txn,
+    categories: List<String>,
+    onDismiss: () -> Unit,
+    onSave: suspend (Txn) -> String?,
+    onSaved: (Txn) -> Unit
+) {
+    var category by remember(txn.id) { mutableStateOf(txn.category) }
+    var subcategory by remember(txn.id) { mutableStateOf(txn.subcategory) }
+    var note by remember(txn.id) { mutableStateOf(txn.note) }
+    var amountStr by remember(txn.id) {
+        mutableStateOf(
+            if (txn.amount % 1.0 == 0.0) txn.amount.toLong().toString()
+            else txn.amount.toString()
+        )
+    }
+    var description by remember(txn.id) { mutableStateOf(txn.description) }
+    var catOpen by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun submit() {
+        val amount = amountStr.toDoubleOrNull()
+        when {
+            saving -> return
+            amount == null || amount <= 0 -> error = "Nominal tidak valid"
+            else -> {
+                saving = true
+                error = null
+                val updated = txn.copy(
+                    category = category.trim(),
+                    subcategory = subcategory.trim(),
+                    note = note.trim(),
+                    amount = amount,
+                    description = description.trim()
+                )
+                scope.launch {
+                    val err = onSave(updated)
+                    saving = false
+                    if (err == null) onSaved(updated) else error = err
+                }
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        title = { Text("Edit Transaksi", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Box {
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = {
+                            category = it
+                            error = null
+                        },
+                        label = { Text("Kategori", fontSize = 12.sp, color = GrayText) },
+                        singleLine = true,
+                        textStyle = TextStyle(fontSize = 13.sp, color = White),
+                        trailingIcon = {
+                            if (categories.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { catOpen = true },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.ArrowDropDown,
+                                        contentDescription = "Pilih kategori",
+                                        tint = GrayText
+                                    )
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    DropdownMenu(
+                        expanded = catOpen,
+                        onDismissRequest = { catOpen = false }
+                    ) {
+                        categories.forEach { c ->
+                            DropdownMenuItem(
+                                text = { Text(c, fontSize = 13.sp) },
+                                onClick = {
+                                    category = c
+                                    catOpen = false
+                                    error = null
+                                }
+                            )
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = subcategory,
+                    onValueChange = {
+                        subcategory = it
+                        error = null
+                    },
+                    label = { Text("Subkategori", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = {
+                        note = it
+                        error = null
+                    },
+                    label = { Text("Catatan", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = amountStr,
+                    onValueChange = {
+                        if (it.length <= 15 && it.all { ch -> ch.isDigit() }) {
+                            amountStr = it
+                            error = null
+                        }
+                    },
+                    label = { Text("Nominal (Rp)", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = {
+                        description = it
+                        error = null
+                    },
+                    label = { Text("Keterangan", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (error != null) {
+                    Text(
+                        error!!,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving,
+                onClick = { submit() }
+            ) {
+                Text(
+                    if (saving) "Menyimpan…" else "Simpan",
+                    color = RedPrimary
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !saving,
+                onClick = onDismiss
+            ) { Text("Batal") }
+        }
+    )
 }
 
 @Composable
