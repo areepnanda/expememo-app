@@ -991,7 +991,15 @@ fun App() {
     }
 
     LaunchedEffect(showCategories, hasConfig, reloadTick) {
-        if (showCategories && hasConfig) loadCategoryDefs()
+        if (showCategories && hasConfig && categoryDefs == null) loadCategoryDefs()
+    }
+
+    LaunchedEffect(hasConfig) {
+        if (hasConfig && categoryDefs == null) loadCategoryDefs()
+    }
+
+    LaunchedEffect(editingTxn) {
+        if (editingTxn != null && hasConfig && categoryDefs == null) loadCategoryDefs()
     }
 
     BackHandler(enabled = detail != null) { detail = null }
@@ -1152,10 +1160,14 @@ fun App() {
                 onBankFilterChange = { bankFilter = it },
                 categoryFilter = categoryFilter,
                 onCategoryFilterChange = { categoryFilter = it },
-                onReload = { load() },
+                onReload = {
+                    load()
+                    loadCategoryDefs()
+                },
                 onOpenTxn = { detail = it },
                 onOpenCategory = { selectedCategory = it },
-                onOpenDrawer = { scope.launch { drawerState.open() } }
+                onOpenDrawer = { scope.launch { drawerState.open() } },
+                masterCategories = categoryDefs
             )
         }
     }
@@ -1224,14 +1236,21 @@ fun App() {
     if (editingTxn != null) {
         EditTxnDialog(
             txn = editingTxn!!,
-            categories = rows
-                ?.groupBy { it.category }
-                ?.filterKeys { it.isNotBlank() }
-                ?.map { (name, txns) ->
-                    name to (txns.firstOrNull { it.icon.isNotBlank() }?.icon ?: "")
+            categories = buildList {
+                rows
+                    ?.groupBy { it.category }
+                    ?.filterKeys { it.isNotBlank() }
+                    ?.forEach { (name, txns) ->
+                        add(name to (txns.firstOrNull { it.icon.isNotBlank() }?.icon ?: ""))
+                    }
+                categoryDefs?.forEach { def ->
+                    if (none { it.first.equals(def.name, ignoreCase = true) }) {
+                        add(def.name to def.icon)
+                    }
                 }
-                ?.sortedBy { it.first.lowercase() }
-                ?: emptyList(),
+            }
+                .distinctBy { it.first.uppercase() }
+                .sortedBy { it.first.lowercase() },
             onDismiss = { editingTxn = null },
             onSave = saveTxnEdit,
             onSaved = { updated ->
@@ -1394,7 +1413,8 @@ fun MainScreen(
     onReload: () -> Unit,
     onOpenTxn: (Txn) -> Unit,
     onOpenCategory: (String) -> Unit,
-    onOpenDrawer: () -> Unit
+    onOpenDrawer: () -> Unit,
+    masterCategories: List<CategoryDef>? = null
 ) {
     val stats = categoryStats(shown)
 
@@ -1519,7 +1539,8 @@ fun MainScreen(
                         categoryFilter = categoryFilter,
                         onCategoryFilterChange = onCategoryFilterChange,
                         onReload = onReload,
-                        onOpenTxn = onOpenTxn
+                        onOpenTxn = onOpenTxn,
+                        masterCategories = masterCategories
                     )
                     1 -> StatistikTab(
                         shown = shown,
@@ -1547,16 +1568,22 @@ fun TransactionTab(
     categoryFilter: String?,
     onCategoryFilterChange: (String?) -> Unit,
     onReload: () -> Unit,
-    onOpenTxn: (Txn) -> Unit
+    onOpenTxn: (Txn) -> Unit,
+    masterCategories: List<CategoryDef>? = null
 ) {
     val banks = remember(shown) {
         shown.map { it.account }.filter { it.isNotBlank() }.distinct().sorted()
     }
-    val categories = remember(shown) {
-        shown.map { it.category }.filter { it.isNotBlank() }.distinct().sorted()
+    val categories = remember(shown, masterCategories) {
+        val txnCats = shown.map { it.category }.filter { it.isNotBlank() }.distinct()
+        val defNames = masterCategories?.map { it.name } ?: emptyList()
+        (txnCats + defNames.filter { d -> txnCats.none { it.equals(d, true) } })
+            .distinctBy { it.uppercase() }
+            .sortedBy { it.lowercase() }
     }
-    val catIconOf = remember(shown) {
-        shown.groupBy { it.category }.mapValues { (_, v) ->
+    val catIconOf = remember(shown, masterCategories) {
+        val defMap = masterCategories?.associate { it.name to it.icon } ?: emptyMap()
+        defMap + shown.groupBy { it.category }.mapValues { (_, v) ->
             v.firstOrNull { it.icon.isNotBlank() }?.icon ?: ""
         }
     }
