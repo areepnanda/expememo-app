@@ -40,8 +40,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -55,6 +58,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -199,6 +203,11 @@ private val IconBackspace = makeIcon(
 private val IconEdit = makeIcon(
     "Edit",
     "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+)
+
+private val IconLabel = makeIcon(
+    "Label",
+    "M17.63 5.84C17.27 5.33 16.67 5 16 5L5 5.01C3.9 5.01 3 5.9 3 7v10c0 1.1.9 1.99 2 1.99L16 19c.67 0 1.27-.33 1.63-.84L22 12l-4.37-6.16z"
 )
 
 private const val PREFS_NAME = "expememo_prefs"
@@ -356,6 +365,13 @@ data class CategoryStat(
     val txs: List<Txn>
 )
 
+data class CategoryDef(
+    val name: String,
+    val icon: String,
+    val keywords: List<String>,
+    val used: Int
+)
+
 data class BankStat(
     val name: String,
     val total: Double,
@@ -415,6 +431,28 @@ object Api {
             "&description=" + enc(description)
         return fetch(url, token, query)
     }
+
+    fun rulesList(url: String, token: String): String =
+        fetch(url, token, "action=rules.list")
+
+    fun rulesSave(
+        url: String,
+        token: String,
+        old: String,
+        name: String,
+        icon: String,
+        keywords: String
+    ): String {
+        val query = "action=rules.save" +
+            "&name=" + enc(name) +
+            "&icon=" + enc(icon) +
+            "&keywords=" + enc(keywords) +
+            (if (old.isNotBlank()) "&old=" + enc(old) else "")
+        return fetch(url, token, query)
+    }
+
+    fun rulesDelete(url: String, token: String, name: String): String =
+        fetch(url, token, "action=rules.delete&name=" + enc(name))
 }
 
 object Updater {
@@ -527,6 +565,31 @@ fun parseRows(json: String): List<Txn> {
                 amount = o.getDouble("amount")
             )
         }
+}
+
+fun parseCategoryDefs(json: String): List<CategoryDef> {
+    val obj = JSONObject(json)
+    if (!obj.optBoolean("ok", false)) {
+        throw Exception(obj.optString("error", "respon tidak valid"))
+    }
+    val arr = obj.getJSONArray("categories")
+    return (0 until arr.length())
+        .map { arr.getJSONObject(it) }
+        .mapNotNull { o ->
+            val name = o.optString("name", "").trim()
+            if (name.isBlank()) return@mapNotNull null
+            val kwArr = o.optJSONArray("keywords")
+            CategoryDef(
+                name = name,
+                icon = o.optString("icon", "").trim(),
+                keywords = if (kwArr == null) emptyList()
+                else (0 until kwArr.length())
+                    .map { kwArr.optString(it, "").trim() }
+                    .filter { it.isNotBlank() },
+                used = o.optInt("used", 0)
+            )
+        }
+        .sortedBy { it.name.lowercase() }
 }
 
 fun rupiah(value: Double): String {
@@ -755,6 +818,13 @@ fun App() {
     var locked by remember { mutableStateOf(lockActive(context)) }
     var lastStoppedAt by remember { mutableStateOf(0L) }
     var showSettings by remember { mutableStateOf(false) }
+    var showCategories by remember { mutableStateOf(false) }
+    var categoryDefs by remember { mutableStateOf<List<CategoryDef>?>(null) }
+    var catLoading by remember { mutableStateOf(false) }
+    var catError by remember { mutableStateOf<String?>(null) }
+    var catAddOpen by remember { mutableStateOf(false) }
+    var catEditTarget by remember { mutableStateOf<CategoryDef?>(null) }
+    var catDeleteTarget by remember { mutableStateOf<CategoryDef?>(null) }
     var hasConfig by remember { mutableStateOf(loadApiConfig(context) != null) }
     var reloadTick by remember { mutableStateOf(0) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -833,6 +903,69 @@ fun App() {
         return null
     }
 
+    fun loadCategoryDefs() {
+        val cfg = loadApiConfig(context)
+        if (cfg == null) {
+            catError = "URL & token API belum diatur"
+            return
+        }
+        catLoading = true
+        catError = null
+        scope.launch {
+            try {
+                val body = withContext(Dispatchers.IO) { Api.rulesList(cfg.url, cfg.token) }
+                categoryDefs = parseCategoryDefs(body)
+            } catch (e: Exception) {
+                catError = e.message ?: "gagal memuat kategori"
+            } finally {
+                catLoading = false
+            }
+        }
+    }
+
+    val saveCategoryDef: suspend (String?, String, String, List<String>) -> String? = { old, name, icon, keywords ->
+        val cfg = loadApiConfig(context)
+        when {
+            cfg == null -> "URL & token API belum diatur"
+            else -> try {
+                val body = withContext(Dispatchers.IO) {
+                    Api.rulesSave(
+                        url = cfg.url,
+                        token = cfg.token,
+                        old = old ?: "",
+                        name = name,
+                        icon = icon,
+                        keywords = keywords.joinToString(",")
+                    )
+                }
+                val obj = JSONObject(body)
+                if (!obj.optBoolean("ok", false)) {
+                    obj.optString("error", "").ifBlank { "gagal menyimpan" }
+                } else null
+            } catch (e: Exception) {
+                e.message?.ifBlank { null } ?: "gagal menyimpan"
+            }
+        }
+    }
+
+    val deleteCategoryDef: suspend (CategoryDef) -> String? = { def ->
+        val cfg = loadApiConfig(context)
+        when {
+            cfg == null -> "URL & token API belum diatur"
+            else -> try {
+                val body = withContext(Dispatchers.IO) {
+                    Api.rulesDelete(cfg.url, cfg.token, def.name)
+                }
+                val obj = JSONObject(body)
+                if (!obj.optBoolean("ok", false)) {
+                    obj.optString("error", "").ifBlank { "gagal menghapus" }
+                } else null
+            } catch (e: Exception) {
+                e.message?.ifBlank { null } ?: "gagal menghapus"
+            }
+        }
+    }
+
     LaunchedEffect(Unit) {
         val update = runCatching {
             withContext(Dispatchers.IO) { Updater.check(BuildConfig.VERSION_CODE) }
@@ -851,8 +984,13 @@ fun App() {
         if (hasConfig) load()
     }
 
+    LaunchedEffect(showCategories, hasConfig, reloadTick) {
+        if (showCategories && hasConfig) loadCategoryDefs()
+    }
+
     BackHandler(enabled = detail != null) { detail = null }
     BackHandler(enabled = detail == null && selectedCategory != null) { selectedCategory = null }
+    BackHandler(enabled = showCategories && hasConfig) { showCategories = false }
     BackHandler(enabled = showSettings && hasConfig) { showSettings = false }
 
     val saveTxnEdit: suspend (Txn) -> String? = { updated ->
@@ -907,6 +1045,17 @@ fun App() {
             onBack = { showSettings = false },
             onSave = { u, t -> saveSettings(u, t) }
         )
+    } else if (showCategories) {
+        CategoryManageScreen(
+            categories = categoryDefs,
+            loading = catLoading,
+            error = catError,
+            onBack = { showCategories = false },
+            onRetry = { loadCategoryDefs() },
+            onAdd = { catAddOpen = true },
+            onEdit = { catEditTarget = it },
+            onDelete = { catDeleteTarget = it }
+        )
     } else if (detail != null) {
         DetailScreen(
             t = detail!!,
@@ -939,6 +1088,23 @@ fun App() {
                         modifier = Modifier.padding(16.dp)
                     )
                     HorizontalDivider(color = CardBorder)
+                    NavigationDrawerItem(
+                        icon = {
+                            Icon(
+                                IconLabel,
+                                contentDescription = null,
+                                tint = GrayText,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        label = { Text("Kategori", fontSize = 13.sp, color = White) },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            showCategories = true
+                        },
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
                     NavigationDrawerItem(
                         icon = {
                             Icon(
@@ -1068,6 +1234,45 @@ fun App() {
                 rows = rows?.map { if (it.id == fixed.id) fixed else it }
                 if (detail?.id == fixed.id) detail = fixed
                 editingTxn = null
+                load()
+            }
+        )
+    }
+
+    if (showCategories && catAddOpen) {
+        CategoryEditDialog(
+            original = null,
+            onDismiss = { catAddOpen = false },
+            onSave = saveCategoryDef,
+            onSaved = {
+                catAddOpen = false
+                loadCategoryDefs()
+                load()
+            }
+        )
+    }
+
+    if (showCategories && catEditTarget != null) {
+        CategoryEditDialog(
+            original = catEditTarget,
+            onDismiss = { catEditTarget = null },
+            onSave = saveCategoryDef,
+            onSaved = {
+                catEditTarget = null
+                loadCategoryDefs()
+                load()
+            }
+        )
+    }
+
+    if (showCategories && catDeleteTarget != null) {
+        CategoryDeleteDialog(
+            target = catDeleteTarget!!,
+            onDismiss = { catDeleteTarget = null },
+            onDelete = deleteCategoryDef,
+            onDeleted = {
+                catDeleteTarget = null
+                loadCategoryDefs()
                 load()
             }
         )
@@ -2072,6 +2277,470 @@ fun CategoryScreen(
             }
         }
     }
+}
+
+@Composable
+fun CategoryManageScreen(
+    categories: List<CategoryDef>?,
+    loading: Boolean,
+    error: String?,
+    onBack: () -> Unit,
+    onRetry: () -> Unit,
+    onAdd: () -> Unit,
+    onEdit: (CategoryDef) -> Unit,
+    onDelete: (CategoryDef) -> Unit
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+
+    Scaffold(
+        containerColor = DarkBg,
+        topBar = {
+            CompactTopBar(
+                onBack = onBack,
+                title = {
+                    Text(
+                        "Kategori",
+                        color = White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            )
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = onAdd,
+                containerColor = RedPrimary,
+                contentColor = White
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = "Tambah kategori")
+            }
+        }
+    ) { pad ->
+        Column(
+            modifier = Modifier
+                .padding(pad)
+                .fillMaxSize()
+        ) {
+            when {
+                categories == null && loading -> {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        CircularProgressIndicator(
+                            color = RedPrimary,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+                }
+                categories == null && error != null -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            error!!,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        )
+                        OutlinedButton(onClick = onRetry) { Text("Coba lagi") }
+                    }
+                }
+                else -> {
+                    OutlinedTextField(
+                        value = query,
+                        onValueChange = { query = it },
+                        singleLine = true,
+                        placeholder = {
+                            Text("Cari kategori…", fontSize = 13.sp, color = GrayText)
+                        },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.Search,
+                                contentDescription = "Cari",
+                                tint = GrayText,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        textStyle = TextStyle(fontSize = 13.sp, color = White),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                    val defs = categories ?: emptyList()
+                    val filtered = if (query.isBlank()) defs
+                    else defs.filter {
+                        it.name.contains(query, true) ||
+                            it.keywords.any { k -> k.contains(query, true) }
+                    }
+                    if (filtered.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            Text(
+                                if (defs.isEmpty()) "Belum ada kategori"
+                                else "Kategori tidak ditemukan",
+                                modifier = Modifier.align(Alignment.Center),
+                                color = GrayText
+                            )
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(
+                                start = 10.dp, end = 10.dp, top = 4.dp, bottom = 88.dp
+                            )
+                        ) {
+                            items(filtered, key = { it.name }) { def ->
+                                CategoryDefRow(
+                                    def = def,
+                                    onEdit = { onEdit(def) },
+                                    onDelete = { onDelete(def) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CategoryDefRow(
+    def: CategoryDef,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+
+    Surface(
+        color = DarkSurface,
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, CardBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(shape = CircleShape, color = DarkBadge) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(34.dp)) {
+                    Text(
+                        def.icon.ifBlank { "📝" },
+                        fontSize = 15.sp
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    def.name,
+                    color = White,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "${def.keywords.size} keyword · ${def.used} trx",
+                    color = GrayText,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Box {
+                IconButton(
+                    onClick = { menuOpen = true },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.MoreVert,
+                        contentDescription = "Menu",
+                        tint = GrayText,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Edit", fontSize = 13.sp) },
+                        leadingIcon = {
+                            Icon(
+                                Icons.Filled.Edit,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onEdit()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Hapus",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onDelete()
+                        }
+                    )
+                }
+            }
+        }
+    }
+    Spacer(modifier = Modifier.height(6.dp))
+}
+
+@Composable
+fun CategoryEditDialog(
+    original: CategoryDef?,
+    onDismiss: () -> Unit,
+    onSave: suspend (old: String?, name: String, icon: String, keywords: List<String>) -> String?,
+    onSaved: () -> Unit
+) {
+    val editing = original != null
+    var name by remember(original) { mutableStateOf(original?.name ?: "") }
+    var icon by remember(original) { mutableStateOf(original?.icon ?: "") }
+    var keywords by remember(original) {
+        mutableStateOf(original?.keywords?.joinToString(", ") ?: "")
+    }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var confirmRename by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun keywordList(): List<String> =
+        keywords.split(",", "|", "\n")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+
+    fun doSave(old: String?) {
+        saving = true
+        error = null
+        scope.launch {
+            val err = onSave(
+                old,
+                name.trim().uppercase(),
+                icon.trim(),
+                keywordList()
+            )
+            saving = false
+            if (err == null) onSaved() else error = err
+        }
+    }
+
+    fun submit() {
+        when {
+            saving -> return
+            name.trim().isEmpty() -> error = "Nama kategori wajib diisi"
+            editing && name.trim().uppercase() != original!!.name.uppercase() -> confirmRename = true
+            else -> doSave(if (editing) original!!.name else null)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        title = {
+            Text(
+                if (editing) "Edit Kategori" else "Tambah Kategori",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(shape = CircleShape, color = DarkBadge) {
+                        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(44.dp)) {
+                            Text(
+                                icon.trim().ifBlank { "📝" },
+                                fontSize = 20.sp
+                            )
+                        }
+                    }
+                    OutlinedTextField(
+                        value = icon,
+                        onValueChange = { if (it.length <= 8) icon = it },
+                        label = { Text("Icon (emoji)", fontSize = 12.sp, color = GrayText) },
+                        singleLine = true,
+                        textStyle = TextStyle(fontSize = 13.sp, color = White),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = {
+                        name = it
+                        error = null
+                    },
+                    label = { Text("Nama kategori", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = keywords,
+                    onValueChange = {
+                        keywords = it
+                        error = null
+                    },
+                    label = {
+                        Text("Keyword (pisahkan dengan koma)", fontSize = 12.sp, color = GrayText)
+                    },
+                    placeholder = {
+                        Text("gofood, resto, sambal", fontSize = 12.sp, color = GrayText)
+                    },
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    minLines = 2,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "Keyword dipakai untuk kategori otomatis dari email bank.",
+                    fontSize = 11.sp,
+                    color = GrayText
+                )
+                if (error != null) {
+                    Text(
+                        error!!,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving,
+                onClick = { submit() }
+            ) {
+                Text(
+                    if (saving) "Menyimpan…" else "Simpan",
+                    color = RedPrimary
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !saving,
+                onClick = onDismiss
+            ) { Text("Batal") }
+        }
+    )
+
+    if (confirmRename && original != null) {
+        AlertDialog(
+            onDismissRequest = { if (!saving) confirmRename = false },
+            title = {
+                Text("Ubah nama kategori?", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Nama \"" + original.name + "\" diubah menjadi \"" +
+                        name.trim().uppercase() + "\". " +
+                        original.used + " transaksi lama akan diperbarui mengikuti nama baru.",
+                    fontSize = 13.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !saving,
+                    onClick = {
+                        confirmRename = false
+                        doSave(original.name)
+                    }
+                ) {
+                    Text("Ya, perbarui", color = RedPrimary)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !saving,
+                    onClick = { confirmRename = false }
+                ) { Text("Batal") }
+            }
+        )
+    }
+}
+
+@Composable
+fun CategoryDeleteDialog(
+    target: CategoryDef,
+    onDismiss: () -> Unit,
+    onDelete: suspend (CategoryDef) -> String?,
+    onDeleted: () -> Unit
+) {
+    var deleting by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    AlertDialog(
+        onDismissRequest = { if (!deleting) onDismiss() },
+        title = { Text("Hapus kategori?", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    "Kategori \"" + target.name + "\" beserta " +
+                        target.keywords.size + " keyword-nya akan dihapus.",
+                    fontSize = 13.sp
+                )
+                if (target.used > 0) {
+                    Text(
+                        "Kategori ini masih dipakai " + target.used +
+                            " transaksi dan tidak dapat dihapus.",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp
+                    )
+                }
+                if (error != null) {
+                    Text(
+                        error!!,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !deleting && target.used == 0,
+                onClick = {
+                    deleting = true
+                    error = null
+                    scope.launch {
+                        val err = onDelete(target)
+                        deleting = false
+                        if (err == null) onDeleted() else error = err
+                    }
+                }
+            ) {
+                Text(
+                    if (deleting) "Menghapus…" else "Hapus",
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !deleting,
+                onClick = onDismiss
+            ) { Text("Batal") }
+        }
+    )
 }
 
 @Composable
