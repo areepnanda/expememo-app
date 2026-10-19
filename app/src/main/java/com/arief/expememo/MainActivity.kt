@@ -42,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
@@ -74,11 +75,14 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -2412,13 +2416,43 @@ fun CategoryDefRow(
     onDelete: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value == SwipeToDismissBoxValue.EndToStart) {
+                onDelete()
+            }
+            false
+        }
+    )
 
-    Surface(
-        color = DarkSurface,
-        shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, CardBorder),
-        modifier = Modifier.fillMaxWidth()
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        backgroundContent = {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(RedContainer),
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Hapus",
+                    tint = White,
+                    modifier = Modifier
+                        .padding(end = 18.dp)
+                        .size(20.dp)
+                )
+            }
+        }
     ) {
+        Surface(
+            color = DarkSurface,
+            shape = RoundedCornerShape(10.dp),
+            border = BorderStroke(1.dp, CardBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
         Row(
             modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -2479,21 +2513,9 @@ fun CategoryDefRow(
                             onEdit()
                         }
                     )
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                "Hapus",
-                                fontSize = 13.sp,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        },
-                        onClick = {
-                            menuOpen = false
-                            onDelete()
-                        }
-                    )
                 }
             }
+        }
         }
     }
     Spacer(modifier = Modifier.height(6.dp))
