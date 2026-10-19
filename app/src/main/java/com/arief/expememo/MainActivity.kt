@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -95,6 +96,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -1223,10 +1225,12 @@ fun App() {
         EditTxnDialog(
             txn = editingTxn!!,
             categories = rows
-                ?.map { it.category }
-                ?.filter { it.isNotBlank() }
-                ?.distinct()
-                ?.sorted()
+                ?.groupBy { it.category }
+                ?.filterKeys { it.isNotBlank() }
+                ?.map { (name, txns) ->
+                    name to (txns.firstOrNull { it.icon.isNotBlank() }?.icon ?: "")
+                }
+                ?.sortedBy { it.first.lowercase() }
                 ?: emptyList(),
             onDismiss = { editingTxn = null },
             onSave = saveTxnEdit,
@@ -3108,7 +3112,7 @@ fun DetailRow(label: String, value: String) {
 @Composable
 fun EditTxnDialog(
     txn: Txn,
-    categories: List<String>,
+    categories: List<Pair<String, String>>,
     onDismiss: () -> Unit,
     onSave: suspend (Txn) -> String?,
     onSaved: (Txn) -> Unit
@@ -3123,10 +3127,13 @@ fun EditTxnDialog(
         )
     }
     var description by remember(txn.id) { mutableStateOf(txn.description) }
-    var catOpen by remember { mutableStateOf(false) }
+    var catOpen by remember(txn.id) { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    val catOptions = if (category.isBlank()) categories
+    else categories.filter { it.first.contains(category, true) }
 
     fun submit() {
         val amount = amountStr.toDoubleOrNull()
@@ -3160,45 +3167,68 @@ fun EditTxnDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
-                Box {
-                    OutlinedTextField(
-                        value = category,
-                        onValueChange = {
-                            category = it
-                            error = null
-                        },
-                        label = { Text("Kategori", fontSize = 12.sp, color = GrayText) },
-                        singleLine = true,
-                        textStyle = TextStyle(fontSize = 13.sp, color = White),
-                        trailingIcon = {
-                            if (categories.isNotEmpty()) {
-                                IconButton(
-                                    onClick = { catOpen = true },
-                                    modifier = Modifier.size(24.dp)
+                OutlinedTextField(
+                    value = category,
+                    onValueChange = {
+                        category = it
+                        error = null
+                    },
+                    label = { Text("Kategori", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    trailingIcon = {
+                        if (categories.isNotEmpty()) {
+                            IconButton(
+                                onClick = { catOpen = !catOpen },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.ArrowDropDown,
+                                    contentDescription = "Pilih kategori",
+                                    tint = GrayText,
+                                    modifier = Modifier.rotate(if (catOpen) 180f else 0f)
+                                )
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (catOpen && catOptions.isNotEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = DarkSurface,
+                        border = BorderStroke(1.dp, CardBorder),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 220.dp)
+                    ) {
+                        LazyColumn {
+                            items(catOptions) { (name, ic) ->
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            category = name
+                                            catOpen = false
+                                            error = null
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp)
                                 ) {
-                                    Icon(
-                                        Icons.Filled.ArrowDropDown,
-                                        contentDescription = "Pilih kategori",
-                                        tint = GrayText
+                                    Text(
+                                        ic.ifBlank { "📝" },
+                                        fontSize = 14.sp
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Text(
+                                        name,
+                                        fontSize = 13.sp,
+                                        color = White,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    DropdownMenu(
-                        expanded = catOpen,
-                        onDismissRequest = { catOpen = false }
-                    ) {
-                        categories.forEach { c ->
-                            DropdownMenuItem(
-                                text = { Text(c, fontSize = 13.sp) },
-                                onClick = {
-                                    category = c
-                                    catOpen = false
-                                    error = null
-                                }
-                            )
                         }
                     }
                 }
