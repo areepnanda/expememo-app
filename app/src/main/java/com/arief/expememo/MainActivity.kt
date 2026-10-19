@@ -1265,6 +1265,10 @@ fun App() {
                 catEditTarget = null
                 loadCategoryDefs()
                 load()
+            },
+            onStale = {
+                catEditTarget = null
+                loadCategoryDefs()
             }
         )
     }
@@ -1278,6 +1282,10 @@ fun App() {
                 catDeleteTarget = null
                 loadCategoryDefs()
                 load()
+            },
+            onStale = {
+                catDeleteTarget = null
+                loadCategoryDefs()
             }
         )
     }
@@ -2283,6 +2291,7 @@ fun CategoryScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CategoryManageScreen(
     categories: List<CategoryDef>?,
@@ -2352,54 +2361,62 @@ fun CategoryManageScreen(
                     }
                 }
                 else -> {
-                    OutlinedTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        singleLine = true,
-                        placeholder = {
-                            Text("Cari kategori…", fontSize = 13.sp, color = GrayText)
-                        },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Filled.Search,
-                                contentDescription = "Cari",
-                                tint = GrayText,
-                                modifier = Modifier.size(18.dp)
+                    PullToRefreshBox(
+                        isRefreshing = loading,
+                        onRefresh = onRetry,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            OutlinedTextField(
+                                value = query,
+                                onValueChange = { query = it },
+                                singleLine = true,
+                                placeholder = {
+                                    Text("Cari kategori…", fontSize = 13.sp, color = GrayText)
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Filled.Search,
+                                        contentDescription = "Cari",
+                                        tint = GrayText,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                textStyle = TextStyle(fontSize = 13.sp, color = White),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
                             )
-                        },
-                        textStyle = TextStyle(fontSize = 13.sp, color = White),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
-                    val defs = categories ?: emptyList()
-                    val filtered = if (query.isBlank()) defs
-                    else defs.filter {
-                        it.name.contains(query, true) ||
-                            it.keywords.any { k -> k.contains(query, true) }
-                    }
-                    if (filtered.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            Text(
-                                if (defs.isEmpty()) "Belum ada kategori"
-                                else "Kategori tidak ditemukan",
-                                modifier = Modifier.align(Alignment.Center),
-                                color = GrayText
-                            )
-                        }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(
-                                start = 10.dp, end = 10.dp, top = 4.dp, bottom = 88.dp
-                            )
-                        ) {
-                            items(filtered, key = { it.name }) { def ->
-                                CategoryDefRow(
-                                    def = def,
-                                    onEdit = { onEdit(def) },
-                                    onDelete = { onDelete(def) }
-                                )
+                            val defs = categories ?: emptyList()
+                            val filtered = if (query.isBlank()) defs
+                            else defs.filter {
+                                it.name.contains(query, true) ||
+                                    it.keywords.any { k -> k.contains(query, true) }
+                            }
+                            if (filtered.isEmpty()) {
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    Text(
+                                        if (defs.isEmpty()) "Belum ada kategori"
+                                        else "Kategori tidak ditemukan",
+                                        modifier = Modifier.align(Alignment.Center),
+                                        color = GrayText
+                                    )
+                                }
+                            } else {
+                                LazyColumn(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentPadding = PaddingValues(
+                                        start = 10.dp, end = 10.dp, top = 4.dp, bottom = 88.dp
+                                    )
+                                ) {
+                                    items(filtered, key = { it.name }) { def ->
+                                        CategoryDefRow(
+                                            def = def,
+                                            onEdit = { onEdit(def) },
+                                            onDelete = { onDelete(def) }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -2526,7 +2543,8 @@ fun CategoryEditDialog(
     original: CategoryDef?,
     onDismiss: () -> Unit,
     onSave: suspend (old: String?, name: String, icon: String, keywords: List<String>) -> String?,
-    onSaved: () -> Unit
+    onSaved: () -> Unit,
+    onStale: () -> Unit = {}
 ) {
     val editing = original != null
     var name by remember(original) { mutableStateOf(original?.name ?: "") }
@@ -2556,7 +2574,11 @@ fun CategoryEditDialog(
                 keywordList()
             )
             saving = false
-            if (err == null) onSaved() else error = err
+            when {
+                err == null -> onSaved()
+                err.contains("tidak ditemukan") -> onStale()
+                else -> error = err
+            }
         }
     }
 
@@ -2704,7 +2726,8 @@ fun CategoryDeleteDialog(
     target: CategoryDef,
     onDismiss: () -> Unit,
     onDelete: suspend (CategoryDef) -> String?,
-    onDeleted: () -> Unit
+    onDeleted: () -> Unit,
+    onStale: () -> Unit = {}
 ) {
     var deleting by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -2746,7 +2769,11 @@ fun CategoryDeleteDialog(
                     scope.launch {
                         val err = onDelete(target)
                         deleting = false
-                        if (err == null) onDeleted() else error = err
+                        when {
+                            err == null -> onDeleted()
+                            err.contains("tidak ditemukan") -> onStale()
+                            else -> error = err
+                        }
                     }
                 }
             ) {
