@@ -10,11 +10,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +31,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -76,14 +80,11 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberDrawerState
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -106,6 +107,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
@@ -113,6 +115,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -123,6 +126,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
@@ -135,7 +139,9 @@ import java.text.DecimalFormatSymbols
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.pow
@@ -438,6 +444,9 @@ object Api {
         return fetch(url, token, query)
     }
 
+    fun syncAll(url: String, token: String): String =
+        fetch(url, token, "action=sync.all")
+
     fun rulesList(url: String, token: String): String =
         fetch(url, token, "action=rules.list")
 
@@ -547,15 +556,10 @@ fun installApk(context: android.content.Context, file: File): Boolean {
     return true
 }
 
-fun parseRows(json: String): List<Txn> {
-    val obj = JSONObject(json)
-    if (!obj.optBoolean("ok", false)) {
-        throw Exception(obj.optString("error", "respon tidak valid"))
-    }
-    val arr = obj.getJSONArray("rows")
-    return (0 until arr.length())
+fun txnsFromJsonArray(arr: JSONArray): List<Txn> =
+    (0 until arr.length())
         .map { arr.getJSONObject(it) }
-        .filter { it.getString("incomeExpense").equals("Expense", true) }
+        .filter { it.optString("incomeExpense", "Expense").equals("Expense", true) }
         .mapNotNull { o ->
             val dt = runCatching { LocalDateTime.parse(o.getString("date")) }.getOrNull()
                 ?: return@mapNotNull null
@@ -571,15 +575,17 @@ fun parseRows(json: String): List<Txn> {
                 amount = o.getDouble("amount")
             )
         }
-}
 
-fun parseCategoryDefs(json: String): List<CategoryDef> {
+fun parseRows(json: String): List<Txn> {
     val obj = JSONObject(json)
     if (!obj.optBoolean("ok", false)) {
         throw Exception(obj.optString("error", "respon tidak valid"))
     }
-    val arr = obj.getJSONArray("categories")
-    return (0 until arr.length())
+    return txnsFromJsonArray(obj.getJSONArray("rows"))
+}
+
+fun rulesFromJsonArray(arr: JSONArray): List<CategoryDef> =
+    (0 until arr.length())
         .map { arr.getJSONObject(it) }
         .mapNotNull { o ->
             val name = o.optString("name", "").trim()
@@ -596,6 +602,79 @@ fun parseCategoryDefs(json: String): List<CategoryDef> {
             )
         }
         .sortedBy { it.name.lowercase() }
+
+fun parseCategoryDefs(json: String): List<CategoryDef> {
+    val obj = JSONObject(json)
+    if (!obj.optBoolean("ok", false)) {
+        throw Exception(obj.optString("error", "respon tidak valid"))
+    }
+    return rulesFromJsonArray(obj.getJSONArray("categories"))
+}
+
+private fun txnToJson(t: Txn): JSONObject = JSONObject().apply {
+    put("id", t.id)
+    put("date", t.dt.toString())
+    put("account", t.account)
+    put("category", t.category)
+    put("icon", t.icon)
+    put("subcategory", t.subcategory)
+    put("note", t.note)
+    put("description", t.description)
+    put("amount", t.amount)
+}
+
+private fun ruleToJson(d: CategoryDef): JSONObject = JSONObject().apply {
+    put("name", d.name)
+    put("icon", d.icon)
+    put("keywords", JSONArray(d.keywords))
+    put("used", d.used)
+}
+
+// Sinkron = replace semua row yang dikirim server (by id),
+// row lama di luar window 24 bulan tetap disimpan di cache.
+fun mergeTxns(current: List<Txn>, fresh: List<Txn>): List<Txn> {
+    if (current.isEmpty()) return fresh
+    val freshIds = fresh.map { it.id }.filter { it.isNotBlank() }.toHashSet()
+    val kept = current.filter { it.id.isBlank() || it.id !in freshIds }
+    return (kept + fresh).sortedByDescending { it.dt }
+}
+
+private const val CACHE_FILE_NAME = "expememo_cache.json"
+
+data class SyncCache(val txns: List<Txn>, val rules: List<CategoryDef>, val lastSync: Long)
+
+object Cache {
+    private fun file(context: Context) = File(context.filesDir, CACHE_FILE_NAME)
+
+    fun load(context: Context): SyncCache? = runCatching {
+        val f = file(context)
+        if (!f.exists()) return null
+        val obj = JSONObject(f.readText())
+        SyncCache(
+            txns = txnsFromJsonArray(obj.getJSONArray("txns")),
+            rules = rulesFromJsonArray(obj.getJSONArray("rules")),
+            lastSync = obj.optLong("lastSync", 0L)
+        )
+    }.getOrNull()
+
+    fun save(context: Context, txns: List<Txn>, rules: List<CategoryDef>, lastSync: Long) {
+        runCatching {
+            val obj = JSONObject()
+            obj.put("version", 1)
+            obj.put("lastSync", lastSync)
+            obj.put("txns", JSONArray().apply { txns.forEach { put(txnToJson(it)) } })
+            obj.put("rules", JSONArray().apply { rules.forEach { put(ruleToJson(it)) } })
+            val tmp = File(context.filesDir, "$CACHE_FILE_NAME.tmp")
+            tmp.writeText(obj.toString())
+            val dst = file(context)
+            if (dst.exists()) dst.delete()
+            if (!tmp.renameTo(dst)) tmp.delete()
+        }
+    }
+
+    fun clear(context: Context) {
+        runCatching { file(context).delete() }
+    }
 }
 
 fun rupiah(value: Double): String {
@@ -826,8 +905,7 @@ fun App() {
     var showSettings by remember { mutableStateOf(false) }
     var showCategories by remember { mutableStateOf(false) }
     var categoryDefs by remember { mutableStateOf<List<CategoryDef>?>(null) }
-    var catLoading by remember { mutableStateOf(false) }
-    var catError by remember { mutableStateOf<String?>(null) }
+    var lastSync by remember { mutableStateOf(0L) }
     var catAddOpen by remember { mutableStateOf(false) }
     var catEditTarget by remember { mutableStateOf<CategoryDef?>(null) }
     var catDeleteTarget by remember { mutableStateOf<CategoryDef?>(null) }
@@ -866,7 +944,13 @@ fun App() {
 
     var fetchSeq by remember { mutableStateOf(0) }
 
-    fun load() {
+    fun persistCache() {
+        val txns = rows ?: return
+        val rules = categoryDefs ?: emptyList()
+        scope.launch(Dispatchers.IO) { Cache.save(context, txns, rules, lastSync) }
+    }
+
+    fun sync() {
         val cfg = loadApiConfig(context)
         if (cfg == null) {
             error = "URL & token API belum diatur. Buka menu ☰ → Pengaturan."
@@ -874,23 +958,48 @@ fun App() {
         }
         loading = true
         error = null
-        val sel = selected
         val seq = ++fetchSeq
         scope.launch {
             try {
-                val query = when (sel) {
-                    is PeriodSelection.All -> "months=24"
-                    is PeriodSelection.Monthly ->
-                        "from=${sel.start}&to=${sel.start.plusMonths(1).minusDays(1)}"
-                    is PeriodSelection.Custom -> "from=${sel.start}&to=${sel.end}"
+                val body = withContext(Dispatchers.IO) { Api.syncAll(cfg.url, cfg.token) }
+                val obj = JSONObject(body)
+                if (!obj.optBoolean("ok", false)) {
+                    throw Exception(obj.optString("error", "respon tidak valid"))
                 }
-                val body = withContext(Dispatchers.IO) { Api.fetch(cfg.url, cfg.token, query) }
-                val parsed = parseRows(body)
-                if (seq == fetchSeq) rows = parsed
+                val fresh = txnsFromJsonArray(obj.getJSONArray("rows"))
+                val rules = rulesFromJsonArray(obj.getJSONArray("categories"))
+                val syncedAt = obj.optLong("serverTime", 0L).takeIf { it > 0 }
+                    ?: runCatching {
+                        Instant.parse(obj.getString("updated")).toEpochMilli()
+                    }.getOrNull()
+                    ?: System.currentTimeMillis()
+                if (seq == fetchSeq) {
+                    val merged = mergeTxns(rows ?: emptyList(), fresh)
+                    rows = merged
+                    categoryDefs = rules
+                    lastSync = syncedAt
+                    withContext(Dispatchers.IO) { Cache.save(context, merged, rules, syncedAt) }
+                }
             } catch (e: Exception) {
-                if (seq == fetchSeq) error = e.message ?: "gagal memuat data"
+                if (seq == fetchSeq) error = e.message ?: "gagal sinkronisasi"
             } finally {
                 if (seq == fetchSeq) loading = false
+            }
+        }
+    }
+
+    // Buka apps: baca cache dulu (tanpa network).
+    // Kalau cache kosong & config ada → sinkronisasi otomatis sekali.
+    fun initData() {
+        scope.launch {
+            val cached = withContext(Dispatchers.IO) { Cache.load(context) }
+            if (loading) return@launch
+            if (cached != null) {
+                rows = cached.txns
+                categoryDefs = cached.rules
+                lastSync = cached.lastSync
+            } else if (loadApiConfig(context) != null) {
+                sync()
             }
         }
     }
@@ -905,28 +1014,15 @@ fun App() {
         saveApiConfig(context, url, token)
         hasConfig = true
         showSettings = false
-        if (changed) reloadTick++
+        if (changed) {
+            Cache.clear(context)
+            rows = null
+            categoryDefs = null
+            lastSync = 0
+            error = null
+            reloadTick++
+        }
         return null
-    }
-
-    fun loadCategoryDefs() {
-        val cfg = loadApiConfig(context)
-        if (cfg == null) {
-            catError = "URL & token API belum diatur"
-            return
-        }
-        catLoading = true
-        catError = null
-        scope.launch {
-            try {
-                val body = withContext(Dispatchers.IO) { Api.rulesList(cfg.url, cfg.token) }
-                categoryDefs = parseCategoryDefs(body)
-            } catch (e: Exception) {
-                catError = e.message ?: "gagal memuat kategori"
-            } finally {
-                catLoading = false
-            }
-        }
     }
 
     val saveCategoryDef: suspend (String?, String, String, List<String>) -> String? = { old, name, icon, keywords ->
@@ -987,19 +1083,7 @@ fun App() {
     }
 
     LaunchedEffect(hasConfig, reloadTick) {
-        if (hasConfig) load()
-    }
-
-    LaunchedEffect(showCategories, hasConfig, reloadTick) {
-        if (showCategories && hasConfig && categoryDefs == null) loadCategoryDefs()
-    }
-
-    LaunchedEffect(hasConfig) {
-        if (hasConfig && categoryDefs == null) loadCategoryDefs()
-    }
-
-    LaunchedEffect(editingTxn) {
-        if (editingTxn != null && hasConfig && categoryDefs == null) loadCategoryDefs()
+        if (hasConfig) initData()
     }
 
     BackHandler(enabled = detail != null) { detail = null }
@@ -1062,10 +1146,10 @@ fun App() {
     } else if (showCategories) {
         CategoryManageScreen(
             categories = categoryDefs,
-            loading = catLoading,
-            error = catError,
+            loading = loading,
+            error = error,
             onBack = { showCategories = false },
-            onRetry = { loadCategoryDefs() },
+            onRetry = { sync() },
             onAdd = { catAddOpen = true },
             onEdit = { catEditTarget = it },
             onDelete = { catDeleteTarget = it }
@@ -1100,6 +1184,15 @@ fun App() {
                         fontSize = 16.sp,
                         color = White,
                         modifier = Modifier.padding(16.dp)
+                    )
+                    Text(
+                        if (lastSync == 0L) "Belum pernah sinkron"
+                        else "Sinkron: " + Instant.ofEpochMilli(lastSync)
+                            .atZone(ZoneId.systemDefault())
+                            .format(DateTimeFormatter.ofPattern("d MMM yyyy HH:mm")),
+                        fontSize = 10.sp,
+                        color = GrayText,
+                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
                     )
                     HorizontalDivider(color = CardBorder)
                     NavigationDrawerItem(
@@ -1149,10 +1242,7 @@ fun App() {
                 shown = shown,
                 periods = recentPeriodOptions(),
                 selectedPeriod = selected,
-                onPeriodChange = {
-                    selected = it
-                    load()
-                },
+                onPeriodChange = { selected = it },
                 onPickCustomPeriod = { showCustomPeriod = true },
                 searchQuery = searchQuery,
                 onSearchChange = { searchQuery = it },
@@ -1160,10 +1250,7 @@ fun App() {
                 onBankFilterChange = { bankFilter = it },
                 categoryFilter = categoryFilter,
                 onCategoryFilterChange = { categoryFilter = it },
-                onReload = {
-                    load()
-                    loadCategoryDefs()
-                },
+                onReload = { sync() },
                 onOpenTxn = { detail = it },
                 onOpenCategory = { selectedCategory = it },
                 onOpenDrawer = { scope.launch { drawerState.open() } },
@@ -1256,12 +1343,16 @@ fun App() {
             onSaved = { updated ->
                 val newIcon = rows
                     ?.filter { it.category.equals(updated.category, ignoreCase = true) }
-                    ?.firstOrNull { it.icon.isNotBlank() }?.icon ?: ""
+                    ?.firstOrNull { it.icon.isNotBlank() }?.icon
+                    ?: categoryDefs
+                        ?.firstOrNull { it.name.equals(updated.category, ignoreCase = true) }
+                        ?.icon
+                    ?: ""
                 val fixed = updated.copy(icon = newIcon)
                 rows = rows?.map { if (it.id == fixed.id) fixed else it }
                 if (detail?.id == fixed.id) detail = fixed
                 editingTxn = null
-                load()
+                persistCache()
             }
         )
     }
@@ -1273,8 +1364,7 @@ fun App() {
             onSave = saveCategoryDef,
             onSaved = {
                 catAddOpen = false
-                loadCategoryDefs()
-                load()
+                sync()
             }
         )
     }
@@ -1286,12 +1376,11 @@ fun App() {
             onSave = saveCategoryDef,
             onSaved = {
                 catEditTarget = null
-                loadCategoryDefs()
-                load()
+                sync()
             },
             onStale = {
                 catEditTarget = null
-                loadCategoryDefs()
+                sync()
             }
         )
     }
@@ -1302,13 +1391,17 @@ fun App() {
             onDismiss = { catDeleteTarget = null },
             onDelete = deleteCategoryDef,
             onDeleted = {
+                val target = catDeleteTarget
                 catDeleteTarget = null
-                loadCategoryDefs()
-                load()
+                if (target != null) {
+                    categoryDefs = (categoryDefs ?: emptyList())
+                        .filterNot { it.name.equals(target.name, ignoreCase = true) }
+                    persistCache()
+                }
             },
             onStale = {
                 catDeleteTarget = null
-                loadCategoryDefs()
+                sync()
             }
         )
     }
@@ -1322,7 +1415,6 @@ fun App() {
             onConfirm = { start, end ->
                 showCustomPeriod = false
                 selected = PeriodSelection.Custom(start, end)
-                load()
             }
         )
     }
@@ -1606,7 +1698,7 @@ fun TransactionTab(
                 modifier = Modifier.align(Alignment.Center),
                 color = RedPrimary
             )
-            error != null -> Column(
+            error != null && !rowsLoaded -> Column(
                 modifier = Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -1623,6 +1715,14 @@ fun TransactionTab(
                 color = GrayText
             )
             else -> Column(modifier = Modifier.fillMaxSize()) {
+                if (error != null) {
+                    Text(
+                        error + " — data terakhir tetap ditampilkan",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                    )
+                }
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = onSearchChange,
@@ -2464,42 +2564,84 @@ fun CategoryDefRow(
     onDelete: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
-    val dismissState = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            if (value == SwipeToDismissBoxValue.EndToStart) {
-                onDelete()
-            }
-            false
-        }
-    )
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val actionWidthPx = with(density) { 84.dp.toPx() }
+    val offsetX = remember { Animatable(0f) }
 
-    SwipeToDismissBox(
-        state = dismissState,
-        enableDismissFromStartToEnd = false,
-        backgroundContent = {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(RedContainer),
-                contentAlignment = Alignment.CenterEnd
+    fun closeRow() {
+        scope.launch { offsetX.animateTo(0f, tween(200)) }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+    ) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(RedContainer),
+            contentAlignment = Alignment.CenterEnd
+        ) {
+            IconButton(
+                onClick = {
+                    closeRow()
+                    onDelete()
+                },
+                modifier = Modifier.size(52.dp)
             ) {
                 Icon(
                     Icons.Filled.Delete,
                     contentDescription = "Hapus",
                     tint = White,
-                    modifier = Modifier
-                        .padding(end = 18.dp)
-                        .size(20.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
-    ) {
         Surface(
             color = DarkSurface,
             shape = RoundedCornerShape(10.dp),
             border = BorderStroke(1.dp, CardBorder),
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier
+                .fillMaxWidth()
+                .offset { IntOffset(offsetX.value.roundToInt(), 0) }
+                .pointerInput(actionWidthPx) {
+                    detectHorizontalDragGestures(
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            scope.launch {
+                                offsetX.snapTo(
+                                    (offsetX.value + dragAmount)
+                                        .coerceIn(-actionWidthPx, 0f)
+                                )
+                            }
+                        },
+                        onDragEnd = {
+                            scope.launch {
+                                val target =
+                                    if (offsetX.value <= -actionWidthPx / 2f) -actionWidthPx
+                                    else 0f
+                                offsetX.animateTo(target, tween(200))
+                            }
+                        },
+                        onDragCancel = {
+                            scope.launch {
+                                val target =
+                                    if (offsetX.value <= -actionWidthPx / 2f) -actionWidthPx
+                                    else 0f
+                                offsetX.animateTo(target, tween(200))
+                            }
+                        }
+                    )
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = {
+                            if (offsetX.value != 0f) closeRow()
+                        }
+                    )
+                }
         ) {
         Row(
             modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
@@ -2533,7 +2675,10 @@ fun CategoryDefRow(
             }
             Box {
                 IconButton(
-                    onClick = { menuOpen = true },
+                    onClick = {
+                        closeRow()
+                        menuOpen = true
+                    },
                     modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
