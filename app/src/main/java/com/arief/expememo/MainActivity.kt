@@ -231,6 +231,8 @@ private const val KEY_PIN_LENGTH = "pin_length"
 private const val LOCK_METHOD_BIOMETRIC = "biometric"
 private const val LOCK_METHOD_PIN = "pin"
 private const val LOCK_GRACE_MS = 2 * 60 * 1000L
+private const val RESUME_DELTA_MS = 6 * 60 * 60 * 1000L
+private const val DELTA_BUFFER_DAYS = 3L
 
 private val AUTHENTICATORS =
     BiometricManager.Authenticators.BIOMETRIC_WEAK or
@@ -915,33 +917,6 @@ fun App() {
     val txnListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     val catListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 
-    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) {
-                lastStoppedAt = SystemClock.elapsedRealtime()
-            }
-            if (event == Lifecycle.Event.ON_RESUME) {
-                val f = pendingInstall
-                if (f != null) {
-                    pendingInstall = null
-                    installApk(context, f)
-                }
-                val stopped = lastStoppedAt
-                if (stopped > 0) {
-                    lastStoppedAt = 0
-                    if (SystemClock.elapsedRealtime() - stopped > LOCK_GRACE_MS &&
-                        lockActive(context)
-                    ) {
-                        locked = true
-                    }
-                }
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-
     var fetchSeq by remember { mutableStateOf(0) }
 
     fun persistCache() {
@@ -988,8 +963,41 @@ fun App() {
         }
     }
 
-    // Buka apps: baca cache dulu (tanpa network).
-    // Kalau cache kosong & config ada → sinkronisasi otomatis sekali.
+    // Sinkronisasi diam-diam: ambil hanya transaksi sejak sync terakhir
+    // (dikurangi buffer) untuk menangkap transaksi harian tanpa pull-to-refresh.
+    fun syncDelta() {
+        val cfg = loadApiConfig(context) ?: return
+        if (loading || lastSync == 0L) return
+        val seq = ++fetchSeq
+        scope.launch {
+            try {
+                val fromDate = Instant.ofEpochMilli(lastSync)
+                    .atZone(ZoneId.systemDefault())
+                    .toLocalDate()
+                    .minusDays(DELTA_BUFFER_DAYS)
+                val body = withContext(Dispatchers.IO) {
+                    Api.fetch(cfg.url, cfg.token, "from=$fromDate")
+                }
+                val obj = JSONObject(body)
+                if (!obj.optBoolean("ok", false)) return@launch
+                val fresh = txnsFromJsonArray(obj.getJSONArray("rows"))
+                if (seq == fetchSeq) {
+                    val merged = mergeTxns(rows ?: emptyList(), fresh)
+                    rows = merged
+                    lastSync = System.currentTimeMillis()
+                    withContext(Dispatchers.IO) {
+                        Cache.save(context, merged, categoryDefs ?: emptyList(), lastSync)
+                    }
+                }
+            } catch (_: Exception) {
+                // silent: cache tetap dipakai
+            }
+        }
+    }
+
+    // Buka apps: baca cache dulu (instan, tanpa network).
+    // Kalau cache ada → lanjut delta sync diam-diam.
+    // Kalau cache kosong & config ada → sinkronisasi penuh sekali.
     fun initData() {
         scope.launch {
             val cached = withContext(Dispatchers.IO) { Cache.load(context) }
@@ -998,10 +1006,43 @@ fun App() {
                 rows = cached.txns
                 categoryDefs = cached.rules
                 lastSync = cached.lastSync
+                syncDelta()
             } else if (loadApiConfig(context) != null) {
                 sync()
             }
         }
+    }
+
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                lastStoppedAt = SystemClock.elapsedRealtime()
+            }
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val f = pendingInstall
+                if (f != null) {
+                    pendingInstall = null
+                    installApk(context, f)
+                }
+                val stopped = lastStoppedAt
+                if (stopped > 0) {
+                    lastStoppedAt = 0
+                    if (SystemClock.elapsedRealtime() - stopped > LOCK_GRACE_MS &&
+                        lockActive(context)
+                    ) {
+                        locked = true
+                    }
+                }
+                if (hasConfig && lastSync > 0 &&
+                    System.currentTimeMillis() - lastSync > RESUME_DELTA_MS
+                ) {
+                    syncDelta()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     fun saveSettings(newUrl: String, newToken: String): String? {
