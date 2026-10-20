@@ -231,7 +231,7 @@ private const val KEY_PIN_LENGTH = "pin_length"
 private const val LOCK_METHOD_BIOMETRIC = "biometric"
 private const val LOCK_METHOD_PIN = "pin"
 private const val LOCK_GRACE_MS = 2 * 60 * 1000L
-private const val RESUME_DELTA_MS = 6 * 60 * 60 * 1000L
+private const val RESUME_DELTA_MS = 10 * 60 * 1000L
 private const val DELTA_BUFFER_DAYS = 3L
 
 private val AUTHENTICATORS =
