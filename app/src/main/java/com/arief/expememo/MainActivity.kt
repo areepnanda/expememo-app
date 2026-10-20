@@ -632,12 +632,27 @@ private fun ruleToJson(d: CategoryDef): JSONObject = JSONObject().apply {
     put("used", d.used)
 }
 
+fun excludedIdsFromJson(obj: JSONObject): Set<String> =
+    obj.optJSONArray("excludedIds")?.let { arr ->
+        (0 until arr.length())
+            .map { arr.optString(it, "").trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+    } ?: emptySet()
+
 // Sinkron = replace semua row yang dikirim server (by id),
+// hapus row yang server exclude secara eksplisit (excludedIds),
 // row lama di luar window 24 bulan tetap disimpan di cache.
-fun mergeTxns(current: List<Txn>, fresh: List<Txn>): List<Txn> {
+fun mergeTxns(
+    current: List<Txn>,
+    fresh: List<Txn>,
+    excludedIds: Set<String> = emptySet()
+): List<Txn> {
     if (current.isEmpty()) return fresh
     val freshIds = fresh.map { it.id }.filter { it.isNotBlank() }.toHashSet()
-    val kept = current.filter { it.id.isBlank() || it.id !in freshIds }
+    val kept = current.filter {
+        (it.id.isBlank() || it.id !in freshIds) && it.id !in excludedIds
+    }
     return (kept + fresh).sortedByDescending { it.dt }
 }
 
@@ -949,7 +964,11 @@ fun App() {
                     }.getOrNull()
                     ?: System.currentTimeMillis()
                 if (seq == fetchSeq) {
-                    val merged = mergeTxns(rows ?: emptyList(), fresh)
+                    val merged = mergeTxns(
+                        rows ?: emptyList(),
+                        fresh,
+                        excludedIdsFromJson(obj)
+                    )
                     rows = merged
                     categoryDefs = rules
                     lastSync = syncedAt
@@ -982,7 +1001,11 @@ fun App() {
                 if (!obj.optBoolean("ok", false)) return@launch
                 val fresh = txnsFromJsonArray(obj.getJSONArray("rows"))
                 if (seq == fetchSeq) {
-                    val merged = mergeTxns(rows ?: emptyList(), fresh)
+                    val merged = mergeTxns(
+                        rows ?: emptyList(),
+                        fresh,
+                        excludedIdsFromJson(obj)
+                    )
                     rows = merged
                     lastSync = System.currentTimeMillis()
                     withContext(Dispatchers.IO) {
