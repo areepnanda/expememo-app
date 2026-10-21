@@ -99,6 +99,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
@@ -644,6 +645,49 @@ fun parseCategoryDefs(json: String): List<CategoryDef> {
     return rulesFromJsonArray(obj.getJSONArray("categories"))
 }
 
+data class CicilanPlan(
+    val id: String,
+    val item: String,
+    val account: String,
+    val category: String,
+    val total: Double,
+    val tenor: Int,
+    val monthly: Double,
+    val startDate: String?,
+    val status: String,
+    val paid: Int,
+    val paidTotal: Double,
+    val remaining: Double,
+    val nextDate: String?
+)
+
+fun plansFromJsonArray(arr: JSONArray?): List<CicilanPlan> =
+    (arr ?: JSONArray()).let { a ->
+        (0 until a.length())
+            .map { a.optJSONObject(it) }
+            .filterNotNull()
+            .mapNotNull { o ->
+                val id = o.optString("id", "").trim()
+                val item = o.optString("item", "").trim()
+                if (id.isBlank() || item.isBlank()) return@mapNotNull null
+                CicilanPlan(
+                    id = id,
+                    item = item,
+                    account = o.optString("account", "").trim(),
+                    category = o.optString("category", "").trim(),
+                    total = o.optDouble("total", 0.0),
+                    tenor = o.optInt("tenor", 0),
+                    monthly = o.optDouble("monthly", 0.0),
+                    startDate = o.optString("startDate", "").trim().ifBlank { null },
+                    status = o.optString("status", "ACTIVE").trim().uppercase(),
+                    paid = o.optInt("paid", 0),
+                    paidTotal = o.optDouble("paidTotal", 0.0),
+                    remaining = o.optDouble("remaining", 0.0),
+                    nextDate = o.optString("nextDate", "").trim().ifBlank { null }
+                )
+            }
+    }
+
 private fun txnToJson(t: Txn): JSONObject = JSONObject().apply {
     put("id", t.id)
     put("date", t.dt.toString())
@@ -689,7 +733,12 @@ fun mergeTxns(
 
 private const val CACHE_FILE_NAME = "expememo_cache.json"
 
-data class SyncCache(val txns: List<Txn>, val rules: List<CategoryDef>, val lastSync: Long)
+data class SyncCache(
+    val txns: List<Txn>,
+    val rules: List<CategoryDef>,
+    val plans: List<CicilanPlan>,
+    val lastSync: Long
+)
 
 object Cache {
     private fun file(context: Context) = File(context.filesDir, CACHE_FILE_NAME)
@@ -701,17 +750,48 @@ object Cache {
         SyncCache(
             txns = txnsFromJsonArray(obj.getJSONArray("txns")),
             rules = rulesFromJsonArray(obj.getJSONArray("rules")),
+            plans = plansFromJsonArray(obj.optJSONArray("plans")),
             lastSync = obj.optLong("lastSync", 0L)
         )
     }.getOrNull()
 
-    fun save(context: Context, txns: List<Txn>, rules: List<CategoryDef>, lastSync: Long) {
+    fun save(
+        context: Context,
+        txns: List<Txn>,
+        rules: List<CategoryDef>,
+        plans: List<CicilanPlan>,
+        lastSync: Long
+    ) {
         runCatching {
             val obj = JSONObject()
             obj.put("version", 1)
             obj.put("lastSync", lastSync)
             obj.put("txns", JSONArray().apply { txns.forEach { put(txnToJson(it)) } })
             obj.put("rules", JSONArray().apply { rules.forEach { put(ruleToJson(it)) } })
+            obj.put(
+                "plans",
+                JSONArray().apply {
+                    plans.forEach { p ->
+                        put(
+                            JSONObject().apply {
+                                put("id", p.id)
+                                put("item", p.item)
+                                put("account", p.account)
+                                put("category", p.category)
+                                put("total", p.total)
+                                put("tenor", p.tenor)
+                                put("monthly", p.monthly)
+                                put("startDate", p.startDate ?: "")
+                                put("status", p.status)
+                                put("paid", p.paid)
+                                put("paidTotal", p.paidTotal)
+                                put("remaining", p.remaining)
+                                put("nextDate", p.nextDate ?: "")
+                            }
+                        )
+                    }
+                }
+            )
             val tmp = File(context.filesDir, "$CACHE_FILE_NAME.tmp")
             tmp.writeText(obj.toString())
             val dst = file(context)
@@ -889,7 +969,8 @@ fun CompactBottomBar(tab: Int, onTabChange: (Int) -> Unit) {
         ) {
             BottomBarItem(IconReceipt, "Transaksi", tab == 0) { onTabChange(0) }
             BottomBarItem(IconBarChart, "Statistik", tab == 1) { onTabChange(1) }
-            BottomBarItem(IconBank, "Bank", tab == 2) { onTabChange(2) }
+            BottomBarItem(IconCreditCard, "Cicilan", tab == 2) { onTabChange(2) }
+            BottomBarItem(IconBank, "Bank", tab == 3) { onTabChange(3) }
         }
     }
 }
@@ -954,6 +1035,7 @@ fun App() {
     var showSettings by remember { mutableStateOf(false) }
     var showCategories by remember { mutableStateOf(false) }
     var categoryDefs by remember { mutableStateOf<List<CategoryDef>?>(null) }
+    var plans by remember { mutableStateOf<List<CicilanPlan>?>(null) }
     var lastSync by remember { mutableStateOf(0L) }
     var catAddOpen by remember { mutableStateOf(false) }
     var catEditTarget by remember { mutableStateOf<CategoryDef?>(null) }
@@ -969,7 +1051,8 @@ fun App() {
     fun persistCache() {
         val txns = rows ?: return
         val rules = categoryDefs ?: emptyList()
-        scope.launch(Dispatchers.IO) { Cache.save(context, txns, rules, lastSync) }
+        val p = plans ?: emptyList()
+        scope.launch(Dispatchers.IO) { Cache.save(context, txns, rules, p, lastSync) }
     }
 
     fun sync() {
@@ -1003,8 +1086,11 @@ fun App() {
                     )
                     rows = merged
                     categoryDefs = rules
+                    if (obj.has("plans")) plans = plansFromJsonArray(obj.optJSONArray("plans"))
                     lastSync = syncedAt
-                    withContext(Dispatchers.IO) { Cache.save(context, merged, rules, syncedAt) }
+                    withContext(Dispatchers.IO) {
+                        Cache.save(context, merged, rules, plans ?: emptyList(), syncedAt)
+                    }
                 }
             } catch (e: Exception) {
                 if (seq == fetchSeq) error = e.message ?: "gagal sinkronisasi"
@@ -1041,7 +1127,10 @@ fun App() {
                     rows = merged
                     lastSync = System.currentTimeMillis()
                     withContext(Dispatchers.IO) {
-                        Cache.save(context, merged, categoryDefs ?: emptyList(), lastSync)
+                        Cache.save(
+                            context, merged, categoryDefs ?: emptyList(),
+                            plans ?: emptyList(), lastSync
+                        )
                     }
                 }
             } catch (_: Exception) {
@@ -1060,6 +1149,7 @@ fun App() {
             if (cached != null) {
                 rows = cached.txns
                 categoryDefs = cached.rules
+                plans = cached.plans
                 lastSync = cached.lastSync
                 syncDelta()
             } else if (loadApiConfig(context) != null) {
@@ -1382,7 +1472,8 @@ fun App() {
                 onOpenTxn = { detail = it },
                 onOpenCategory = { selectedCategory = it },
                 onOpenDrawer = { scope.launch { drawerState.open() } },
-                masterCategories = categoryDefs
+                masterCategories = categoryDefs,
+                plans = plans
             )
         }
     }
@@ -1502,6 +1593,7 @@ fun App() {
                         "Jadi cicilan, tagihan bulanan dibuat otomatis",
                     Toast.LENGTH_LONG
                 ).show()
+                sync()
             }
         )
     }
@@ -1655,7 +1747,8 @@ fun MainScreen(
     onOpenTxn: (Txn) -> Unit,
     onOpenCategory: (String) -> Unit,
     onOpenDrawer: () -> Unit,
-    masterCategories: List<CategoryDef>? = null
+    masterCategories: List<CategoryDef>? = null,
+    plans: List<CicilanPlan>? = null
 ) {
     val stats = categoryStats(shown)
 
@@ -1788,7 +1881,14 @@ fun MainScreen(
                         stats = stats,
                         onOpenCategory = onOpenCategory
                     )
-                    2 -> BankTab(shown = shown)
+                    2 -> CicilanTab(
+                        plans = plans,
+                        loading = loading,
+                        rowsLoaded = rowsLoaded,
+                        error = error,
+                        masterCategories = masterCategories
+                    )
+                    3 -> BankTab(shown = shown)
                 }
             }
         }
@@ -2191,6 +2291,226 @@ fun BarChart(
                         s.icon.ifBlank { s.name.take(1) },
                         fontSize = 13.sp,
                         maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CicilanTab(
+    plans: List<CicilanPlan>?,
+    loading: Boolean,
+    rowsLoaded: Boolean,
+    error: String?,
+    masterCategories: List<CategoryDef>? = null
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        when {
+            loading && plans == null -> CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.Center),
+                color = RedPrimary
+            )
+            error != null && plans == null -> Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    error,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(16.dp)
+                )
+                Text(
+                    "Tarik ke bawah untuk coba lagi",
+                    color = GrayText,
+                    fontSize = 11.sp
+                )
+            }
+            plans != null && plans.isEmpty() -> Text(
+                "Belum ada cicilan\nUbah transaksi jadi cicilan dari detail transaksi",
+                modifier = Modifier.align(Alignment.Center),
+                color = GrayText,
+                fontSize = 12.sp,
+                lineHeight = 18.sp
+            )
+            plans != null -> {
+                val active = plans.filter { it.status == "ACTIVE" }
+                val monthlySum = active.sumOf { it.monthly }
+                val remainingSum = active.sumOf { it.remaining }
+                val iconOf = remember(masterCategories) {
+                    masterCategories
+                        ?.associate { it.name.uppercase() to it.icon }
+                        ?: emptyMap()
+                }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (active.isNotEmpty()) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = RedContainer.copy(alpha = 0.35f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            "Tagihan cicilan / bulan",
+                                            fontSize = 10.sp,
+                                            color = RedOnContainer
+                                        )
+                                        Text(
+                                            rupiah(monthlySum),
+                                            fontSize = 17.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = White
+                                        )
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            "Sisa total",
+                                            fontSize = 10.sp,
+                                            color = RedOnContainer
+                                        )
+                                        Text(
+                                            rupiah(remainingSum),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = White
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    items(plans) { plan ->
+                        CicilanCard(plan = plan, icon = iconOf[plan.category.uppercase()] ?: "")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun isoDateLabel(iso: String?): String {
+    val d = iso?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: return ""
+    return d.dayOfMonth.toString() + " " + MONTH_NAMES[d.monthValue - 1] + " " + d.year
+}
+
+@Composable
+fun CicilanCard(plan: CicilanPlan, icon: String) {
+    val done = plan.status != "ACTIVE"
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = DarkSurface,
+        border = BorderStroke(1.dp, CardBorder),
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (done) 0.55f else 1f)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(icon.ifBlank { "💳" }, fontSize = 16.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        plan.item,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        listOf(plan.account, plan.category)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" • ")
+                            .ifBlank { "-" },
+                        fontSize = 10.sp,
+                        color = GrayText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = if (done) DarkBadge else RedContainer
+                ) {
+                    Text(
+                        if (done) "LUNAS" else "AKTIF",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (done) GrayText else RedOnContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(top = 10.dp)
+            ) {
+                LinearProgressIndicator(
+                    progress = {
+                        if (plan.tenor > 0)
+                            (plan.paid.toFloat() / plan.tenor).coerceIn(0f, 1f)
+                        else 0f
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = if (done) GrayText else RedPrimary,
+                    trackColor = DarkBadge
+                )
+                Text(
+                    plan.paid.toString() + "/" + plan.tenor,
+                    fontSize = 10.sp,
+                    color = GrayText,
+                    modifier = Modifier.padding(start = 8.dp)
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text("Per bulan", fontSize = 9.sp, color = GrayText)
+                    Text(
+                        rupiah(plan.monthly),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = White
+                    )
+                }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        if (done) "Terbayar" else "Tagihan berikutnya",
+                        fontSize = 9.sp,
+                        color = GrayText
+                    )
+                    Text(
+                        if (done) isoDateLabel(plan.startDate)
+                        else isoDateLabel(plan.nextDate).ifBlank { "-" },
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = White
+                    )
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("Sisa", fontSize = 9.sp, color = GrayText)
+                    Text(
+                        if (done) rupiah(0.0) else rupiah(plan.remaining),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (done) GrayText else RedAmount
                     )
                 }
             }
