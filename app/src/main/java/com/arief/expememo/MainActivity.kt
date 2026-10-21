@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricManager
@@ -57,6 +58,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.DrawerValue
@@ -83,6 +85,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -215,6 +218,16 @@ private val IconBackspace = makeIcon(
 private val IconEdit = makeIcon(
     "Edit",
     "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34a.9959.9959 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+)
+
+private val IconCreditCard = makeIcon(
+    "CreditCard",
+    "M20 4H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V6c0-1.11-.89-2-2-2zm0 14H4v-6h16v6zm0-10H4V6h16v2z"
+)
+
+private val IconCalendar = makeIcon(
+    "Calendar",
+    "M17 12h-5v5h5v-5zM16 1v2H8V1H6v2H5c-1.11 0-1.99.9-1.99 2L3 19c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-1V3h-2v2zm2 16H5V8h14v11z"
 )
 
 private val IconLabel = makeIcon(
@@ -448,6 +461,24 @@ object Api {
 
     fun syncAll(url: String, token: String): String =
         fetch(url, token, "action=sync.all")
+
+    fun convertToCicilan(
+        url: String,
+        token: String,
+        id: String,
+        item: String,
+        tenor: Int,
+        monthly: Double,
+        startDate: String
+    ): String {
+        val query = "action=cicilan.convert" +
+            "&id=" + enc(id) +
+            "&item=" + enc(item) +
+            "&tenor=" + tenor +
+            "&monthly=" + monthly +
+            "&startDate=" + enc(startDate)
+        return fetch(url, token, query)
+    }
 
     fun rulesList(url: String, token: String): String =
         fetch(url, token, "action=rules.list")
@@ -907,6 +938,7 @@ fun App() {
     var tab by remember { mutableStateOf(0) }
     var detail by remember { mutableStateOf<Txn?>(null) }
     var editingTxn by remember { mutableStateOf<Txn?>(null) }
+    var convertCicilanTxn by remember { mutableStateOf<Txn?>(null) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     var updateUrl by remember { mutableStateOf<String?>(null) }
     var updateCode by remember { mutableStateOf<Int?>(null) }
@@ -1183,6 +1215,33 @@ fun App() {
     }
 
     val sel = selected
+    val convertCicilan: suspend (Txn, String, Int, Double, String) -> Pair<String?, String?> =
+        { txn, item, tenor, monthly, start ->
+            val cfg = loadApiConfig(context)
+            when {
+                cfg == null -> "URL & token API belum diatur" to null
+                else -> try {
+                    val body = withContext(Dispatchers.IO) {
+                        Api.convertToCicilan(
+                            url = cfg.url,
+                            token = cfg.token,
+                            id = txn.id,
+                            item = item,
+                            tenor = tenor,
+                            monthly = monthly,
+                            startDate = start
+                        )
+                    }
+                    val obj = JSONObject(body)
+                    if (!obj.optBoolean("ok", false)) {
+                        (obj.optString("error", "").ifBlank { "gagal mengubah" }) to null
+                    } else null to obj.optString("planId", "")
+                } catch (e: Exception) {
+                    (e.message?.ifBlank { null } ?: "gagal mengubah") to null
+                }
+            }
+        }
+
     val shown = rows
         ?.filter {
             val d = it.dt.toLocalDate()
@@ -1224,6 +1283,11 @@ fun App() {
             onBack = { detail = null },
             onEdit = if (detail!!.id.isNotBlank()) {
                 { editingTxn = detail }
+            } else null,
+            onConvertToCicilan = if (detail!!.id.isNotBlank() &&
+                !detail!!.id.startsWith("cicilan-")
+            ) {
+                { convertCicilanTxn = detail }
             } else null
         )
     } else if (selectedCategory != null) {
@@ -1417,6 +1481,27 @@ fun App() {
                 if (detail?.id == fixed.id) detail = fixed
                 editingTxn = null
                 persistCache()
+            }
+        )
+    }
+
+    if (convertCicilanTxn != null) {
+        ConvertCicilanDialog(
+            txn = convertCicilanTxn!!,
+            onDismiss = { convertCicilanTxn = null },
+            onSave = convertCicilan,
+            onConverted = { planId ->
+                val removed = convertCicilanTxn
+                rows = rows?.filter { it.id != removed?.id }
+                convertCicilanTxn = null
+                detail = null
+                persistCache()
+                Toast.makeText(
+                    context,
+                    (if (planId.isNullOrBlank()) "" else planId + " • ") +
+                        "Jadi cicilan, tagihan bulanan dibuat otomatis",
+                    Toast.LENGTH_LONG
+                ).show()
             }
         )
     }
@@ -3254,7 +3339,12 @@ fun PinEntryPad(pinLength: Int, onUnlocked: () -> Unit, onError: (String) -> Uni
 }
 
 @Composable
-fun DetailScreen(t: Txn, onBack: () -> Unit, onEdit: (() -> Unit)? = null) {
+fun DetailScreen(
+    t: Txn,
+    onBack: () -> Unit,
+    onEdit: (() -> Unit)? = null,
+    onConvertToCicilan: (() -> Unit)? = null
+) {
     Scaffold(
         containerColor = DarkBg,
         topBar = {
@@ -3322,6 +3412,35 @@ fun DetailScreen(t: Txn, onBack: () -> Unit, onEdit: (() -> Unit)? = null) {
                     }
                 }
             }
+            if (onConvertToCicilan != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedButton(
+                    onClick = onConvertToCicilan,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = White),
+                    border = BorderStroke(1.dp, CardBorder)
+                ) {
+                    Icon(
+                        IconCreditCard,
+                        contentDescription = "Ubah ke cicilan",
+                        tint = RedAmount,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        "Ubah ke Cicilan",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                Text(
+                    "Sembunyikan dari list & buat tagihan bulanan otomatis",
+                    fontSize = 10.sp,
+                    color = GrayText,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
         }
     }
 }
@@ -3342,6 +3461,206 @@ fun DetailRow(label: String, value: String) {
             color = White,
             modifier = Modifier.weight(1f)
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ConvertCicilanDialog(
+    txn: Txn,
+    onDismiss: () -> Unit,
+    onSave: suspend (Txn, String, Int, Double, String) -> Pair<String?, String?>,
+    onConverted: (String?) -> Unit
+) {
+    var item by remember(txn.id) { mutableStateOf(txn.note) }
+    var tenorStr by remember(txn.id) { mutableStateOf("") }
+    var monthlyStr by remember(txn.id) { mutableStateOf("") }
+    var startDate by remember(txn.id) { mutableStateOf<LocalDate?>(null) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    val tenor = tenorStr.toIntOrNull()
+    val monthly = monthlyStr.toDoubleOrNull()
+
+    fun submit() {
+        when {
+            saving -> return
+            item.isBlank() -> error = "Item wajib diisi"
+            startDate == null -> error = "Pilih tanggal tagihan pertama"
+            tenor == null || tenor < 1 -> error = "Tenor tidak valid"
+            monthly == null || monthly <= 0 -> error = "Nominal bulanan tidak valid"
+            else -> {
+                saving = true
+                error = null
+                val start = startDate!!.format(DateTimeFormatter.ISO_LOCAL_DATE)
+                scope.launch {
+                    val (err, planId) = onSave(txn, item.trim(), tenor!!, monthly!!, start)
+                    saving = false
+                    if (err == null) onConverted(planId) else error = err
+                }
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        title = { Text("Ubah ke Cicilan", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    "Total " + rupiah(txn.amount) + if (tenor != null && tenor > 0 &&
+                        monthly != null && monthly > 0
+                    ) " • " + rupiah(monthly) + "/bulan × " + tenor + "x" else "",
+                    fontSize = 12.sp,
+                    color = GrayText
+                )
+                OutlinedTextField(
+                    value = item,
+                    onValueChange = {
+                        item = it
+                        error = null
+                    },
+                    label = { Text("Item", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = startDate?.let {
+                        it.dayOfMonth.toString() + " " + MONTH_NAMES[it.monthValue - 1] + " " + it.year
+                    } ?: "",
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Tagihan pertama", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { showDatePicker = true },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                IconCalendar,
+                                contentDescription = "Pilih tanggal tagihan pertama",
+                                tint = GrayText,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = tenorStr,
+                    onValueChange = {
+                        if (it.length <= 2 && it.all { ch -> ch.isDigit() }) {
+                            tenorStr = it
+                            error = null
+                        }
+                    },
+                    label = { Text("Tenor (bulan)", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = monthlyStr,
+                    onValueChange = {
+                        if (it.length <= 15 && it.all { ch -> ch.isDigit() }) {
+                            monthlyStr = it
+                            error = null
+                        }
+                    },
+                    label = { Text("Nominal per bulan (Rp)", fontSize = 12.sp, color = GrayText) },
+                    singleLine = true,
+                    textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "Transaksi disembunyikan dari list & jadi plan cicilan " +
+                        "dengan tagihan bulanan otomatis.",
+                    fontSize = 10.sp,
+                    color = GrayText
+                )
+                if (error != null) {
+                    Text(
+                        error!!,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving,
+                onClick = { submit() }
+            ) {
+                Text(
+                    if (saving) "Menyimpan…" else "Ubah",
+                    color = RedPrimary
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                enabled = !saving,
+                onClick = onDismiss
+            ) { Text("Batal") }
+        }
+    )
+
+    if (showDatePicker) {
+        val today = LocalDate.now()
+        val minDate = today.minusYears(3)
+        val initial = startDate ?: today
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = initial.toUtcMillis(),
+            initialDisplayedMonthMillis = initial.toUtcMillis(),
+            yearRange = IntRange(minDate.year, today.year + 2),
+            selectableDates = object : SelectableDates {
+                override fun isSelectableDate(utcTimeMillis: Long): Boolean =
+                    utcTimeMillis >= minDate.toUtcMillis()
+            }
+        )
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(
+                    enabled = pickerState.selectedDateMillis != null,
+                    onClick = {
+                        pickerState.selectedDateMillis?.let {
+                            startDate = it.toLocalDateUtc()
+                            error = null
+                        }
+                        showDatePicker = false
+                    }
+                ) { Text("Pilih") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("Batal") }
+            }
+        ) {
+            DatePicker(
+                state = pickerState,
+                title = {
+                    Text(
+                        "Tagihan pertama",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = White,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp)
+                    )
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 
