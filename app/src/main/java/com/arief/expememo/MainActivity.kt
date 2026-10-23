@@ -1125,6 +1125,7 @@ fun App() {
                         excludedIdsFromJson(obj)
                     )
                     rows = merged
+                    if (obj.has("plans")) plans = plansFromJsonArray(obj.optJSONArray("plans"))
                     lastSync = System.currentTimeMillis()
                     withContext(Dispatchers.IO) {
                         Cache.save(
