@@ -595,10 +595,14 @@ fun txnsFromJsonArray(arr: JSONArray): List<Txn> =
         .map { arr.getJSONObject(it) }
         .filter { it.optString("incomeExpense", "Expense").equals("Expense", true) }
         .mapNotNull { o ->
+            // Row tanpa Message ID (data lama sebelum kolom ID diisi) dibuang,
+            // kalau tidak akan menumpuk duplikat di cache setiap sync.
+            val id = o.optString("id", "").trim()
+            if (id.isBlank()) return@mapNotNull null
             val dt = runCatching { LocalDateTime.parse(o.getString("date")) }.getOrNull()
                 ?: return@mapNotNull null
             Txn(
-                id = o.optString("id", "").trim(),
+                id = id,
                 dt = dt,
                 account = o.getString("account"),
                 category = o.getString("category").trim(),
@@ -718,17 +722,21 @@ fun excludedIdsFromJson(obj: JSONObject): Set<String> =
 // Sinkron = replace semua row yang dikirim server (by id),
 // hapus row yang server exclude secara eksplisit (excludedIds),
 // row lama di luar window 24 bulan tetap disimpan di cache.
+// Row tanpa id dibuang & fresh didupe by id (jaga-jaga sheet berisi dobel).
 fun mergeTxns(
     current: List<Txn>,
     fresh: List<Txn>,
     excludedIds: Set<String> = emptySet()
 ): List<Txn> {
-    if (current.isEmpty()) return fresh
-    val freshIds = fresh.map { it.id }.filter { it.isNotBlank() }.toHashSet()
+    val freshClean = fresh
+        .filter { it.id.isNotBlank() && it.id !in excludedIds }
+        .distinctBy { it.id }
+    if (current.isEmpty()) return freshClean
+    val freshIds = freshClean.map { it.id }.toHashSet()
     val kept = current.filter {
-        (it.id.isBlank() || it.id !in freshIds) && it.id !in excludedIds
+        it.id.isNotBlank() && it.id !in freshIds && it.id !in excludedIds
     }
-    return (kept + fresh).sortedByDescending { it.dt }
+    return (kept + freshClean).sortedByDescending { it.dt }
 }
 
 private const val CACHE_FILE_NAME = "expememo_cache.json"
@@ -1355,7 +1363,16 @@ fun App() {
             tokenSaved = apiValueSaved(context, KEY_API_TOKEN),
             allowBack = hasConfig,
             onBack = { showSettings = false },
-            onSave = { u, t -> saveSettings(u, t) }
+            onSave = { u, t -> saveSettings(u, t) },
+            onClearCache = {
+                Cache.clear(context)
+                rows = null
+                categoryDefs = null
+                plans = null
+                lastSync = 0
+                error = null
+                sync()
+            }
         )
     } else if (showCategories) {
         CategoryManageScreen(
@@ -4190,7 +4207,8 @@ fun SettingsScreen(
     tokenSaved: Boolean,
     allowBack: Boolean,
     onBack: () -> Unit,
-    onSave: (String, String) -> String?
+    onSave: (String, String) -> String?,
+    onClearCache: () -> Unit
 ) {
     var url by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
@@ -4288,6 +4306,14 @@ fun SettingsScreen(
                 fontSize = 11.sp,
                 color = GrayText
             )
+            OutlinedButton(
+                onClick = onClearCache,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = White),
+                border = BorderStroke(1.dp, CardBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Bersihkan Cache & Sinkron Ulang", fontSize = 13.sp)
+            }
             Spacer(modifier = Modifier.height(8.dp))
             HorizontalDivider(color = CardBorder)
             Text(
