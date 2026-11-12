@@ -1108,11 +1108,13 @@ fun App() {
         }
     }
 
-    // Sinkronisasi diam-diam: ambil hanya transaksi sejak sync terakhir
+    // Sinkronisasi delta: ambil hanya transaksi sejak sync terakhir
     // (dikurangi buffer) untuk menangkap transaksi harian tanpa pull-to-refresh.
+    // Tetap tampilkan loading bar seperti sync penuh.
     fun syncDelta() {
         val cfg = loadApiConfig(context) ?: return
         if (loading || lastSync == 0L) return
+        loading = true
         val seq = ++fetchSeq
         scope.launch {
             try {
@@ -1144,6 +1146,8 @@ fun App() {
                 }
             } catch (_: Exception) {
                 // silent: cache tetap dipakai
+            } finally {
+                if (seq == fetchSeq) loading = false
             }
         }
     }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.arief.expememo"
         minSdk = 26
         targetSdk = 34
-        versionCode = 30
-        versionName = "1.29"
+        versionCode = 31
+        versionName = "1.30"
     }
 
     buildTypes {
