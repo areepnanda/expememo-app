@@ -20,6 +20,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -102,9 +104,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -113,11 +113,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -1029,6 +1027,7 @@ fun App() {
     var editingTxn by remember { mutableStateOf<Txn?>(null) }
     var convertCicilanTxn by remember { mutableStateOf<Txn?>(null) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
+    var cicilanDetail by remember { mutableStateOf<CicilanPlan?>(null) }
     var updateUrl by remember { mutableStateOf<String?>(null) }
     var updateCode by remember { mutableStateOf<Int?>(null) }
     var downloadProgress by remember { mutableStateOf<Int?>(null) }
@@ -1053,6 +1052,7 @@ fun App() {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val txnListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
     val catListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
+    val statsListState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 
     var fetchSeq by remember { mutableStateOf(0) }
 
@@ -1287,6 +1287,7 @@ fun App() {
 
     BackHandler(enabled = detail != null) { detail = null }
     BackHandler(enabled = detail == null && selectedCategory != null) { selectedCategory = null }
+    BackHandler(enabled = detail == null && cicilanDetail != null) { cicilanDetail = null }
     BackHandler(enabled = showCategories && hasConfig) { showCategories = false }
     BackHandler(enabled = showSettings && hasConfig) { showSettings = false }
 
@@ -1402,6 +1403,19 @@ fun App() {
                 { convertCicilanTxn = detail }
             } else null
         )
+    } else if (cicilanDetail != null) {
+        val plan = cicilanDetail!!
+        CicilanDetailScreen(
+            plan = plan,
+            icon = categoryDefs
+                ?.firstOrNull { it.name.equals(plan.category, ignoreCase = true) }
+                ?.icon ?: "",
+            bills = rows.orEmpty()
+                .filter { it.description.trim().equals("cicilan:" + plan.id, ignoreCase = true) }
+                .sortedBy { it.dt },
+            onBack = { cicilanDetail = null },
+            onOpenTxn = { detail = it }
+        )
     } else if (selectedCategory != null) {
         CategoryScreen(
             stat = categoryStats(shown).firstOrNull { it.name == selectedCategory }
@@ -1475,6 +1489,7 @@ fun App() {
             MainScreen(
                 tab = tab,
                 txnListState = txnListState,
+                statsListState = statsListState,
                 onTabChange = { tab = it },
                 loading = loading,
                 error = error,
@@ -1493,6 +1508,7 @@ fun App() {
                 onReload = { sync() },
                 onOpenTxn = { detail = it },
                 onOpenCategory = { selectedCategory = it },
+                onOpenPlan = { cicilanDetail = it },
                 onOpenDrawer = { scope.launch { drawerState.open() } },
                 masterCategories = categoryDefs,
                 plans = plans
@@ -1750,6 +1766,7 @@ fun CustomPeriodDialog(
 fun MainScreen(
     tab: Int,
     txnListState: LazyListState,
+    statsListState: LazyListState,
     onTabChange: (Int) -> Unit,
     loading: Boolean,
     error: String?,
@@ -1768,11 +1785,25 @@ fun MainScreen(
     onReload: () -> Unit,
     onOpenTxn: (Txn) -> Unit,
     onOpenCategory: (String) -> Unit,
+    onOpenPlan: (CicilanPlan) -> Unit,
     onOpenDrawer: () -> Unit,
     masterCategories: List<CategoryDef>? = null,
     plans: List<CicilanPlan>? = null
 ) {
     val stats = categoryStats(shown)
+
+    val shiftPeriod: (Int) -> Unit = { dir ->
+        when (val sel = selectedPeriod) {
+            is PeriodSelection.Monthly ->
+                onPeriodChange(PeriodSelection.Monthly(sel.start.plusMonths(dir.toLong())))
+            is PeriodSelection.Custom -> {
+                val len = sel.end.toEpochDay() - sel.start.toEpochDay() + 1
+                val start = sel.start.plusDays(len * dir)
+                onPeriodChange(PeriodSelection.Custom(start, start.plusDays(len - 1)))
+            }
+            PeriodSelection.All -> Unit
+        }
+    }
 
     Scaffold(
         containerColor = DarkBg,
@@ -1875,6 +1906,31 @@ fun MainScreen(
             modifier = Modifier
                 .padding(pad)
                 .fillMaxSize()
+                .pointerInput(selectedPeriod) {
+                    var totalDrag = 0f
+                    var startInEdge = false
+                    detectHorizontalDragGestures(
+                        onDragStart = { pos ->
+                            totalDrag = 0f
+                            startInEdge = pos.x < 40.dp.toPx()
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            if (!startInEdge) {
+                                change.consume()
+                                totalDrag += dragAmount
+                            }
+                        },
+                        onDragEnd = {
+                            if (!startInEdge) {
+                                val threshold = size.width / 5f
+                                when {
+                                    totalDrag <= -threshold -> shiftPeriod(-1)
+                                    totalDrag >= threshold -> shiftPeriod(1)
+                                }
+                            }
+                        }
+                    )
+                }
         ) {
             PullToRefreshBox(
                 isRefreshing = loading,
@@ -1901,6 +1957,7 @@ fun MainScreen(
                     1 -> StatistikTab(
                         shown = shown,
                         stats = stats,
+                        listState = statsListState,
                         onOpenCategory = onOpenCategory
                     )
                     2 -> CicilanTab(
@@ -1908,6 +1965,7 @@ fun MainScreen(
                         loading = loading,
                         rowsLoaded = rowsLoaded,
                         error = error,
+                        onOpenPlan = onOpenPlan,
                         masterCategories = masterCategories
                     )
                     3 -> BankTab(shown = shown)
@@ -2153,6 +2211,7 @@ fun FilterDropdownChip(
 fun StatistikTab(
     shown: List<Txn>,
     stats: List<CategoryStat>,
+    listState: LazyListState,
     onOpenCategory: (String) -> Unit
 ) {
     if (shown.isEmpty()) {
@@ -2169,6 +2228,7 @@ fun StatistikTab(
     val totalExpense = shown.sumOf { it.amount }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 16.dp)
     ) {
@@ -2200,10 +2260,6 @@ fun StatistikTab(
                         color = GrayText,
                         modifier = Modifier.padding(bottom = 6.dp)
                     )
-                    BarChart(
-                        stats = stats,
-                        onOpenCategory = onOpenCategory
-                    )
                 }
             }
         }
@@ -2233,99 +2289,12 @@ fun StatistikTab(
 }
 
 @Composable
-fun BarChart(
-    stats: List<CategoryStat>,
-    onOpenCategory: (String) -> Unit
-) {
-    if (stats.isEmpty()) return
-
-    val textMeasurer = rememberTextMeasurer()
-    val labelStyle = TextStyle(fontSize = 9.sp, color = GrayText)
-    val niceMax = niceCeil(stats.maxOf { it.total })
-    val leftPad = 38.dp
-    val gridCount = 4
-
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(190.dp)
-                .pointerInput(stats) {
-                    detectTapGestures { pos ->
-                        val pad = leftPad.toPx()
-                        if (pos.x < pad) return@detectTapGestures
-                        val slot = (size.width - pad) / stats.size
-                        val idx = ((pos.x - pad) / slot)
-                            .toInt()
-                            .coerceIn(0, stats.size - 1)
-                        onOpenCategory(stats[idx].name)
-                    }
-                }
-        ) {
-            val pad = leftPad.toPx()
-            val bottomPad = 6.dp.toPx()
-            val chartW = size.width - pad
-            val chartH = size.height - bottomPad
-
-            for (i in 0..gridCount) {
-                val y = chartH - chartH * i / gridCount
-                drawLine(
-                    color = CardBorder,
-                    start = Offset(pad, y),
-                    end = Offset(size.width, y),
-                    strokeWidth = 1.dp.toPx()
-                )
-                val value = niceMax * i / gridCount
-                val text = textMeasurer.measure(shortRupiah(value), labelStyle)
-                drawText(
-                    textLayoutResult = text,
-                    topLeft = Offset(
-                        pad - 6.dp.toPx() - text.size.width,
-                        y - text.size.height / 2f
-                    )
-                )
-            }
-
-            val slot = chartW / stats.size
-            val barWidth = (slot * 0.55f).coerceAtMost(32.dp.toPx())
-            stats.forEachIndexed { i, s ->
-                val barHeight = ((s.total / niceMax).toFloat() * chartH).coerceAtLeast(2.dp.toPx())
-                val left = pad + slot * i + (slot - barWidth) / 2f
-                drawRoundRect(
-                    color = CHART_COLORS[i % CHART_COLORS.size],
-                    topLeft = Offset(left, chartH - barHeight),
-                    size = Size(barWidth, barHeight),
-                    cornerRadius = CornerRadius(4.dp.toPx())
-                )
-            }
-        }
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = leftPad)
-        ) {
-            stats.forEach { s ->
-                Box(
-                    modifier = Modifier.weight(1f),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        s.icon.ifBlank { s.name.take(1) },
-                        fontSize = 13.sp,
-                        maxLines = 1
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
 fun CicilanTab(
     plans: List<CicilanPlan>?,
     loading: Boolean,
     rowsLoaded: Boolean,
     error: String?,
+    onOpenPlan: (CicilanPlan) -> Unit,
     masterCategories: List<CategoryDef>? = null
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -2412,7 +2381,11 @@ fun CicilanTab(
                         }
                     }
                     items(plans) { plan ->
-                        CicilanCard(plan = plan, icon = iconOf[plan.category.uppercase()] ?: "")
+                        CicilanCard(
+                            plan = plan,
+                            icon = iconOf[plan.category.uppercase()] ?: "",
+                            onClick = { onOpenPlan(plan) }
+                        )
                     }
                 }
             }
@@ -2426,7 +2399,7 @@ private fun isoDateLabel(iso: String?): String {
 }
 
 @Composable
-fun CicilanCard(plan: CicilanPlan, icon: String) {
+fun CicilanCard(plan: CicilanPlan, icon: String, onClick: () -> Unit = {}) {
     val done = plan.status != "ACTIVE"
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -2434,6 +2407,7 @@ fun CicilanCard(plan: CicilanPlan, icon: String) {
         border = BorderStroke(1.dp, CardBorder),
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .alpha(if (done) 0.55f else 1f)
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
@@ -2534,6 +2508,204 @@ fun CicilanCard(plan: CicilanPlan, icon: String) {
                         fontWeight = FontWeight.Medium,
                         color = if (done) GrayText else RedAmount
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CicilanDetailScreen(
+    plan: CicilanPlan,
+    icon: String,
+    bills: List<Txn>,
+    onBack: () -> Unit,
+    onOpenTxn: (Txn) -> Unit
+) {
+    val done = plan.status != "ACTIVE"
+    val start = plan.startDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+
+    // Jadwal lengkap: satu tagihan per bulan sejak startDate,
+    // hari tagihan = tanggal mulai (di-clamp ke akhir bulan) — sama dengan generator di server
+    val schedule = remember(plan.id, start, plan.tenor) {
+        if (start != null && plan.tenor > 0) {
+            (0 until plan.tenor).map { i ->
+                val m = start.plusMonths(i.toLong())
+                (i + 1) to m.withDayOfMonth(minOf(start.dayOfMonth, m.lengthOfMonth()))
+            }
+        } else emptyList()
+    }
+    val billsByMonth = remember(bills) {
+        bills.associateBy { it.dt.year * 100 + it.dt.monthValue }
+    }
+
+    Scaffold(
+        containerColor = DarkBg,
+        topBar = {
+            CompactTopBar(
+                onBack = onBack,
+                title = {
+                    Text(
+                        "Detail Cicilan",
+                        color = White,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            )
+        }
+    ) { pad ->
+        Column(
+            modifier = Modifier
+                .padding(pad)
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(icon.ifBlank { "💳" }, fontSize = 26.sp)
+            Text(
+                plan.item,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.Bold,
+                color = White,
+                modifier = Modifier.padding(top = 6.dp)
+            )
+            Text(
+                listOf(plan.account, plan.category)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" • ")
+                    .ifBlank { "-" },
+                fontSize = 11.sp,
+                color = GrayText,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = if (done) DarkBadge else RedContainer,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text(
+                    if (done) "LUNAS" else "AKTIF",
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (done) GrayText else RedOnContainer,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                )
+            }
+            Text(
+                rupiah(plan.total),
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = RedAmount,
+                modifier = Modifier.padding(top = 10.dp)
+            )
+            Text(
+                "total cicilan",
+                fontSize = 10.sp,
+                color = GrayText
+            )
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = DarkSurface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 16.dp)
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    DetailRow("Per bulan", rupiah(plan.monthly))
+                    DetailRow("Tenor", plan.tenor.toString() + " bulan")
+                    DetailRow("Terbayar", plan.paid.toString() + "/" + plan.tenor + " tagihan")
+                    DetailRow("Sudah tersalurkan", rupiah(plan.paidTotal))
+                    DetailRow("Sisa", rupiah(if (done) 0.0 else plan.remaining))
+                    DetailRow("Mulai", isoDateLabel(plan.startDate).ifBlank { "-" })
+                    if (!done) {
+                        DetailRow(
+                            "Tagihan berikutnya",
+                            isoDateLabel(plan.nextDate).ifBlank { "-" }
+                        )
+                    }
+                }
+            }
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = DarkSurface,
+                border = BorderStroke(1.dp, CardBorder),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp)
+            ) {
+                Column(Modifier.padding(vertical = 4.dp)) {
+                    Text(
+                        "Jadwal Tagihan",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = GrayText,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                    )
+                    if (schedule.isEmpty()) {
+                        Text(
+                            "Jadwal tidak tersedia",
+                            fontSize = 12.sp,
+                            color = GrayText,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
+                    } else {
+                        schedule.forEachIndexed { idx, (no, date) ->
+                            if (idx > 0) HorizontalDivider(color = CardBorder)
+                            val bill = billsByMonth[date.year * 100 + date.monthValue]
+                            val billed = no <= plan.paid
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .then(if (bill != null) Modifier.clickable { onOpenTxn(bill) } else Modifier)
+                                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (billed) RedContainer else DarkBadge,
+                                    modifier = Modifier.size(26.dp)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Text(
+                                            no.toString(),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (billed) RedOnContainer else GrayText
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        date.dayOfMonth.toString() + " " +
+                                            MONTH_NAMES[date.monthValue - 1] + " " + date.year,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (billed) White else GrayText
+                                    )
+                                    Text(
+                                        when {
+                                            bill != null -> bill.note.ifBlank { "Tagihan ke-$no" }
+                                            billed -> "Terbayar"
+                                            else -> "Perkiraan"
+                                        },
+                                        fontSize = 10.sp,
+                                        color = GrayText,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Text(
+                                    rupiah(plan.monthly),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (billed) White else GrayText
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -4015,7 +4187,6 @@ fun EditTxnDialog(
     onSaved: (Txn) -> Unit
 ) {
     var category by remember(txn.id) { mutableStateOf(txn.category) }
-    var subcategory by remember(txn.id) { mutableStateOf(txn.subcategory) }
     var note by remember(txn.id) { mutableStateOf(txn.note) }
     var amountStr by remember(txn.id) {
         mutableStateOf(
@@ -4025,12 +4196,23 @@ fun EditTxnDialog(
     }
     var description by remember(txn.id) { mutableStateOf(txn.description) }
     var catOpen by remember(txn.id) { mutableStateOf(false) }
+    var catQuery by remember(txn.id) { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    val catOptions = if (category.isBlank()) categories
-    else categories.filter { it.first.contains(category, true) }
+    val catFieldInteraction = remember(txn.id) { MutableInteractionSource() }
+    val catFieldPressed by catFieldInteraction.collectIsPressedAsState()
+    LaunchedEffect(catFieldPressed) {
+        if (catFieldPressed) {
+            catOpen = true
+            catQuery = null
+        }
+    }
+
+    val query = catQuery
+    val catOptions = if (query.isNullOrBlank()) categories
+    else categories.filter { it.first.contains(query, true) }
 
     fun submit() {
         val amount = amountStr.toDoubleOrNull()
@@ -4042,7 +4224,7 @@ fun EditTxnDialog(
                 error = null
                 val updated = txn.copy(
                     category = category.trim(),
-                    subcategory = subcategory.trim(),
+                    subcategory = txn.subcategory,
                     note = note.trim(),
                     amount = amount,
                     description = description.trim()
@@ -4068,15 +4250,20 @@ fun EditTxnDialog(
                     value = category,
                     onValueChange = {
                         category = it
+                        catQuery = it
                         error = null
                     },
                     label = { Text("Kategori", fontSize = 12.sp, color = GrayText) },
                     singleLine = true,
                     textStyle = TextStyle(fontSize = 13.sp, color = White),
+                    interactionSource = catFieldInteraction,
                     trailingIcon = {
                         if (categories.isNotEmpty()) {
                             IconButton(
-                                onClick = { catOpen = !catOpen },
+                                onClick = {
+                                    catOpen = !catOpen
+                                    catQuery = null
+                                },
                                 modifier = Modifier.size(24.dp)
                             ) {
                                 Icon(
@@ -4108,6 +4295,7 @@ fun EditTxnDialog(
                                         .clickable {
                                             category = name
                                             catOpen = false
+                                            catQuery = null
                                             error = null
                                         }
                                         .padding(horizontal = 12.dp, vertical = 10.dp)
@@ -4129,17 +4317,6 @@ fun EditTxnDialog(
                         }
                     }
                 }
-                OutlinedTextField(
-                    value = subcategory,
-                    onValueChange = {
-                        subcategory = it
-                        error = null
-                    },
-                    label = { Text("Subkategori", fontSize = 12.sp, color = GrayText) },
-                    singleLine = true,
-                    textStyle = TextStyle(fontSize = 13.sp, color = White),
-                    modifier = Modifier.fillMaxWidth()
-                )
                 OutlinedTextField(
                     value = note,
                     onValueChange = {
