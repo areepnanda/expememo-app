@@ -1924,8 +1924,8 @@ fun MainScreen(
                             if (!startInEdge) {
                                 val threshold = size.width / 5f
                                 when {
-                                    totalDrag <= -threshold -> shiftPeriod(-1)
-                                    totalDrag >= threshold -> shiftPeriod(1)
+                                    totalDrag >= threshold -> shiftPeriod(-1)
+                                    totalDrag <= -threshold -> shiftPeriod(1)
                                 }
                             }
                         }
