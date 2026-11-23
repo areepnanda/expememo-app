@@ -50,10 +50,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.ChevronLeft
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
@@ -1855,7 +1855,7 @@ fun MainScreen(
                                     modifier = Modifier.size(44.dp)
                                 ) {
                                     Icon(
-                                        Icons.Filled.ChevronLeft,
+                                        Icons.Filled.KeyboardArrowLeft,
                                         contentDescription = "Periode sebelumnya",
                                         tint = White,
                                         modifier = Modifier.size(20.dp)
@@ -1890,7 +1890,7 @@ fun MainScreen(
                                     modifier = Modifier.size(44.dp)
                                 ) {
                                     Icon(
-                                        Icons.Filled.ChevronRight,
+                                        Icons.Filled.KeyboardArrowRight,
                                         contentDescription = "Periode berikutnya",
                                         tint = White,
                                         modifier = Modifier.size(20.dp)
