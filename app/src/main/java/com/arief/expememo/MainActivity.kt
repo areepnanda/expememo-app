@@ -50,6 +50,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
@@ -116,9 +118,12 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -158,7 +163,7 @@ private val DAY_NAMES = listOf(
     "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"
 )
 
-private val RedPrimary = Color(0xFFE53935)
+private val RedPrimary = Color(0xFFD32F2F)
 private val RedContainer = Color(0xFF93000A)
 private val RedOnContainer = Color(0xFFFFDAD6)
 private val RedAmount = Color(0xFFFF6E63)
@@ -415,6 +420,26 @@ fun bankAvatar(account: String): BankAvatar = when {
         Color(0xFF616161),
         White
     )
+}
+
+@Composable
+fun LetterAvatar(
+    label: String,
+    size: Dp,
+    fontSize: TextUnit,
+    bg: Color = DarkBadge,
+    fg: Color = White
+) {
+    Surface(shape = CircleShape, color = bg, modifier = Modifier.size(size)) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                label,
+                color = fg,
+                fontWeight = FontWeight.Bold,
+                fontSize = fontSize
+            )
+        }
+    }
 }
 
 object Api {
@@ -910,7 +935,7 @@ fun CompactTopBar(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(44.dp)
+                .height(48.dp)
         ) {
             Canvas(modifier = Modifier.matchParentSize()) {
                 val step = 8.dp.toPx()
@@ -934,7 +959,7 @@ fun CompactTopBar(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (onMenu != null) {
-                    IconButton(onClick = onMenu, modifier = Modifier.size(34.dp)) {
+                    IconButton(onClick = onMenu, modifier = Modifier.size(48.dp)) {
                         Icon(
                             Icons.Filled.Menu,
                             contentDescription = "Menu",
@@ -943,7 +968,7 @@ fun CompactTopBar(
                         )
                     }
                 } else if (onBack != null) {
-                    IconButton(onClick = onBack, modifier = Modifier.size(34.dp)) {
+                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Kembali",
@@ -971,7 +996,7 @@ fun CompactBottomBar(tab: Int, onTabChange: (Int) -> Unit) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .height(60.dp)
         ) {
             BottomBarItem(IconReceipt, "Transaksi", tab == 0) { onTabChange(0) }
             BottomBarItem(IconBarChart, "Statistik", tab == 1) { onTabChange(1) }
@@ -996,16 +1021,25 @@ fun RowScope.BottomBarItem(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = if (selected) RedPrimary else GrayText,
-            modifier = Modifier.size(20.dp)
-        )
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = if (selected) RedContainer else Color.Transparent
+        ) {
+            Icon(
+                icon,
+                contentDescription = label,
+                tint = if (selected) RedOnContainer else GrayText,
+                modifier = Modifier
+                    .padding(horizontal = 16.dp, vertical = 3.dp)
+                    .size(22.dp)
+            )
+        }
         Text(
             label,
-            fontSize = 9.sp,
-            color = if (selected) RedPrimary else GrayText
+            fontSize = 11.sp,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (selected) RedAmount else GrayText,
+            modifier = Modifier.padding(top = 2.dp)
         )
     }
 }
@@ -1814,24 +1848,55 @@ fun MainScreen(
                     var open by remember { mutableStateOf(false) }
 
                     Box {
-                        Row(
-                            modifier = Modifier.clickable { open = true },
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                selectionLabel(selectedPeriod),
-                                color = White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (selectedPeriod != PeriodSelection.All) {
+                                IconButton(
+                                    onClick = { shiftPeriod(-1) },
+                                    modifier = Modifier.size(44.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.ChevronLeft,
+                                        contentDescription = "Periode sebelumnya",
+                                        tint = White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { open = true },
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    selectionLabel(selectedPeriod),
+                                    color = White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
 
-                            Icon(
-                                Icons.Filled.ArrowDropDown,
-                                contentDescription = "Pilih periode",
-                                tint = White
-                            )
+                                Icon(
+                                    Icons.Filled.ArrowDropDown,
+                                    contentDescription = "Pilih periode",
+                                    tint = White
+                                )
+                            }
+                            if (selectedPeriod != PeriodSelection.All) {
+                                IconButton(
+                                    onClick = { shiftPeriod(1) },
+                                    modifier = Modifier.size(44.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.ChevronRight,
+                                        contentDescription = "Periode berikutnya",
+                                        tint = White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
                         }
 
                         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
@@ -1884,7 +1949,7 @@ fun MainScreen(
                                 lockOn = ok
                             }
                         },
-                        modifier = Modifier.size(34.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             if (lockOn) IconLock else IconLockOpen,
@@ -2038,15 +2103,34 @@ fun TransactionTab(
                 )
                 OutlinedButton(onClick = onReload) { Text("Coba lagi") }
             }
-            rowsLoaded && shown.isEmpty() -> Text(
-                "Tidak ada transaksi",
-                modifier = Modifier.align(Alignment.Center),
-                color = GrayText
-            )
+            rowsLoaded && shown.isEmpty() -> Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Belum ada transaksi di periode ini",
+                    color = White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    "Tarik ke bawah untuk sinkron, atau pilih periode lain dari header",
+                    color = GrayText,
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+                TextButton(onClick = onReload, modifier = Modifier.padding(top = 8.dp)) {
+                    Text("Sinkron sekarang", color = RedAmount)
+                }
+            }
             else -> Column(modifier = Modifier.fillMaxSize()) {
                 if (error != null) {
                     Text(
-                        error + " — data terakhir tetap ditampilkan",
+                        error + ", data terakhir tetap ditampilkan",
                         color = MaterialTheme.colorScheme.error,
                         fontSize = 11.sp,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
@@ -2100,16 +2184,47 @@ fun TransactionTab(
                     modifier = Modifier.padding(top = 6.dp)
                 )
                 if (filtered.isEmpty()) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
+                    val hasFilter = searchQuery.isNotBlank() ||
+                        bankFilter != null || categoryFilter != null
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            if (searchQuery.isNotBlank() || bankFilter != null || categoryFilter != null)
-                                "Tidak ada yang cocok dengan filter"
-                            else "Tidak ada transaksi",
-                            color = GrayText
+                            if (hasFilter) "Tidak ada yang cocok dengan filter"
+                            else "Belum ada transaksi di periode ini",
+                            color = White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center
                         )
+                        Text(
+                            if (hasFilter) "Coba kata kunci lain, atau hapus filter"
+                            else "Tarik ke bawah untuk sinkron, atau pilih periode lain dari header",
+                            color = GrayText,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                        if (hasFilter) {
+                            TextButton(
+                                onClick = {
+                                    onSearchChange("")
+                                    onBankFilterChange(null)
+                                    onCategoryFilterChange(null)
+                                },
+                                modifier = Modifier.padding(top = 8.dp)
+                            ) {
+                                Text("Hapus filter", color = RedAmount)
+                            }
+                        } else {
+                            TextButton(onClick = onReload, modifier = Modifier.padding(top = 8.dp)) {
+                                Text("Sinkron sekarang", color = RedAmount)
+                            }
+                        }
                     }
                 } else {
                     Row(
@@ -2216,11 +2331,27 @@ fun StatistikTab(
 ) {
     if (shown.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize()) {
-            Text(
-                "Tidak ada transaksi",
-                modifier = Modifier.align(Alignment.Center),
-                color = GrayText
-            )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Belum ada transaksi di periode ini",
+                    color = White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    "Statistik muncul setelah transaksi tersinkron",
+                    color = GrayText,
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
         }
         return
     }
@@ -2278,6 +2409,7 @@ fun StatistikTab(
                         CategoryRow(
                             stat = s,
                             percent = (s.total / totalExpense * 100).toInt(),
+                            fraction = if (totalExpense > 0) (s.total / totalExpense).toFloat() else 0f,
                             color = CHART_COLORS[i % CHART_COLORS.size],
                             onClick = { onOpenCategory(s.name) }
                         )
@@ -2412,7 +2544,15 @@ fun CicilanCard(plan: CicilanPlan, icon: String, onClick: () -> Unit = {}) {
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(icon.ifBlank { "💳" }, fontSize = 16.sp)
+                if (icon.isBlank()) {
+                    LetterAvatar(
+                        plan.item.trim().take(1).uppercase().ifBlank { "?" },
+                        size = 26.dp,
+                        fontSize = 13.sp
+                    )
+                } else {
+                    Text(icon, fontSize = 16.sp)
+                }
                 Spacer(modifier = Modifier.width(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -2460,7 +2600,7 @@ fun CicilanCard(plan: CicilanPlan, icon: String, onClick: () -> Unit = {}) {
                     modifier = Modifier
                         .weight(1f)
                         .height(5.dp)
-                        .clip(RoundedCornerShape(3.dp)),
+                        .clip(RoundedCornerShape(50)),
                     color = if (done) GrayText else RedPrimary,
                     trackColor = DarkBadge
                 )
@@ -2526,7 +2666,7 @@ fun CicilanDetailScreen(
     val start = plan.startDate?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
 
     // Jadwal lengkap: satu tagihan per bulan sejak startDate,
-    // hari tagihan = tanggal mulai (di-clamp ke akhir bulan) — sama dengan generator di server
+    // hari tagihan = tanggal mulai (di-clamp ke akhir bulan), sama dengan generator di server
     val schedule = remember(plan.id, start, plan.tenor) {
         if (start != null && plan.tenor > 0) {
             (0 until plan.tenor).map { i ->
@@ -2563,7 +2703,15 @@ fun CicilanDetailScreen(
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(icon.ifBlank { "💳" }, fontSize = 26.sp)
+            if (icon.isBlank()) {
+                LetterAvatar(
+                    plan.item.trim().take(1).uppercase().ifBlank { "?" },
+                    size = 56.dp,
+                    fontSize = 24.sp
+                )
+            } else {
+                Text(icon, fontSize = 26.sp)
+            }
             Text(
                 plan.item,
                 fontSize = 17.sp,
@@ -2716,11 +2864,27 @@ fun CicilanDetailScreen(
 fun BankTab(shown: List<Txn>) {
     if (shown.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize()) {
-            Text(
-                "Tidak ada transaksi",
-                modifier = Modifier.align(Alignment.Center),
-                color = GrayText
-            )
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Belum ada transaksi di periode ini",
+                    color = White,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    "Rekap per bank muncul setelah transaksi tersinkron",
+                    color = GrayText,
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 6.dp)
+                )
+            }
         }
         return
     }
@@ -2812,6 +2976,24 @@ fun BankTab(shown: List<Txn>) {
                                         fontSize = 10.sp,
                                         color = GrayText
                                     )
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(top = 4.dp)
+                                            .fillMaxWidth()
+                                            .height(4.dp)
+                                            .clip(RoundedCornerShape(50))
+                                            .background(DarkBadge)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxHeight()
+                                                .fillMaxWidth(
+                                                    if (total > 0) (b.total / total).toFloat() else 0f
+                                                )
+                                                .clip(RoundedCornerShape(50))
+                                                .background(avatar.bg)
+                                        )
+                                    }
                                 }
                                 Column(horizontalAlignment = Alignment.End) {
                                     Text(
@@ -2839,6 +3021,7 @@ fun BankTab(shown: List<Txn>) {
 fun CategoryRow(
     stat: CategoryStat,
     percent: Int,
+    fraction: Float,
     color: Color,
     onClick: () -> Unit
 ) {
@@ -2876,6 +3059,22 @@ fun CategoryRow(
                 fontSize = 10.sp,
                 color = GrayText
             )
+            Box(
+                modifier = Modifier
+                    .padding(top = 4.dp)
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(DarkBadge)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                        .clip(RoundedCornerShape(50))
+                        .background(color)
+                )
+            }
         }
         Text(
             rupiah(stat.total),
@@ -3064,11 +3263,30 @@ fun CategoryScreen(
             HorizontalDivider(color = CardBorder)
             if (stat.txs.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize()) {
-                    Text(
-                        "Tidak ada transaksi",
-                        modifier = Modifier.align(Alignment.Center),
-                        color = GrayText
-                    )
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(horizontal = 32.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "Belum ada transaksi di kategori ini",
+                            color = White,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            "Coba periode lain dari header beranda",
+                            color = GrayText,
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                        TextButton(onClick = onBack, modifier = Modifier.padding(top = 8.dp)) {
+                            Text("Kembali", color = RedAmount)
+                        }
+                    }
                 }
             } else {
                 LazyColumn(
@@ -3239,7 +3457,7 @@ fun CategoryDefRow(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(12.dp))
     ) {
         Box(
             modifier = Modifier
@@ -3264,7 +3482,7 @@ fun CategoryDefRow(
         }
         Surface(
             color = DarkSurface,
-            shape = RoundedCornerShape(10.dp),
+            shape = RoundedCornerShape(12.dp),
             border = BorderStroke(1.dp, CardBorder),
             modifier = Modifier
                 .fillMaxWidth()
@@ -3313,7 +3531,7 @@ fun CategoryDefRow(
             Surface(shape = CircleShape, color = DarkBadge) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.size(34.dp)) {
                     Text(
-                        def.icon.ifBlank { "📝" },
+                        def.icon.ifBlank { def.name.trim().take(1).uppercase().ifBlank { "?" } },
                         fontSize = 15.sp
                     )
                 }
@@ -3451,7 +3669,9 @@ fun CategoryEditDialog(
                     Surface(shape = CircleShape, color = DarkBadge) {
                         Box(contentAlignment = Alignment.Center, modifier = Modifier.size(44.dp)) {
                             Text(
-                                icon.trim().ifBlank { "📝" },
+                                icon.trim().ifBlank {
+                                    name.trim().take(1).uppercase().ifBlank { "?" }
+                                },
                                 fontSize = 20.sp
                             )
                         }
@@ -3874,7 +4094,7 @@ fun DetailScreen(
                 },
                 actions = {
                     if (onEdit != null) {
-                        IconButton(onClick = onEdit, modifier = Modifier.size(34.dp)) {
+                        IconButton(onClick = onEdit, modifier = Modifier.size(48.dp)) {
                             Icon(
                                 IconEdit,
                                 contentDescription = "Edit transaksi",
@@ -3931,7 +4151,7 @@ fun DetailScreen(
                 OutlinedButton(
                     onClick = onConvertToCicilan,
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
+                    shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = White),
                     border = BorderStroke(1.dp, CardBorder)
                 ) {
@@ -4056,7 +4276,7 @@ fun ConvertCicilanDialog(
                     trailingIcon = {
                         IconButton(
                             onClick = { showDatePicker = true },
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(44.dp)
                         ) {
                             Icon(
                                 IconCalendar,
@@ -4264,7 +4484,7 @@ fun EditTxnDialog(
                                     catOpen = !catOpen
                                     catQuery = null
                                 },
-                                modifier = Modifier.size(24.dp)
+                                modifier = Modifier.size(44.dp)
                             ) {
                                 Icon(
                                     Icons.Filled.ArrowDropDown,
@@ -4279,7 +4499,7 @@ fun EditTxnDialog(
                 )
                 if (catOpen && catOptions.isNotEmpty()) {
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(12.dp),
                         color = DarkSurface,
                         border = BorderStroke(1.dp, CardBorder),
                         modifier = Modifier
@@ -4300,10 +4520,15 @@ fun EditTxnDialog(
                                         }
                                         .padding(horizontal = 12.dp, vertical = 10.dp)
                                 ) {
-                                    Text(
-                                        ic.ifBlank { "📝" },
-                                        fontSize = 14.sp
-                                    )
+                                    if (ic.isBlank()) {
+                                        LetterAvatar(
+                                            name.trim().take(1).uppercase().ifBlank { "?" },
+                                            size = 24.dp,
+                                            fontSize = 12.sp
+                                        )
+                                    } else {
+                                        Text(ic, fontSize = 14.sp)
+                                    }
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Text(
                                         name,
