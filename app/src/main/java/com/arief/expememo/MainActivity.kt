@@ -1325,6 +1325,19 @@ fun App() {
     BackHandler(enabled = showCategories && hasConfig) { showCategories = false }
     BackHandler(enabled = showSettings && hasConfig) { showSettings = false }
 
+    val shiftPeriod: (Int) -> Unit = { dir ->
+        when (val sel = selected) {
+            is PeriodSelection.Monthly ->
+                selected = PeriodSelection.Monthly(sel.start.plusMonths(dir.toLong()))
+            is PeriodSelection.Custom -> {
+                val len = sel.end.toEpochDay() - sel.start.toEpochDay() + 1
+                val start = sel.start.plusDays(len * dir)
+                selected = PeriodSelection.Custom(start, start.plusDays(len - 1))
+            }
+            PeriodSelection.All -> Unit
+        }
+    }
+
     val saveTxnEdit: suspend (Txn) -> String? = { updated ->
         val cfg = loadApiConfig(context)
         when {
@@ -1456,7 +1469,10 @@ fun App() {
                 ?: CategoryStat(selectedCategory ?: "", "", 0.0, 0, emptyList()),
             listState = catListState,
             onBack = { selectedCategory = null },
-            onOpenTxn = { detail = it }
+            onOpenTxn = { detail = it },
+            periodLabel = selectionLabel(selected),
+            canShiftPeriod = selected != PeriodSelection.All,
+            onShiftPeriod = { dir -> shiftPeriod(dir) }
         )
     } else {
         ModalNavigationDrawer(
@@ -1532,6 +1548,7 @@ fun App() {
                 periods = recentPeriodOptions(),
                 selectedPeriod = selected,
                 onPeriodChange = { selected = it },
+                onShiftPeriod = { dir -> shiftPeriod(dir) },
                 onPickCustomPeriod = { showCustomPeriod = true },
                 searchQuery = searchQuery,
                 onSearchChange = { searchQuery = it },
@@ -1809,6 +1826,7 @@ fun MainScreen(
     periods: List<LocalDate>,
     selectedPeriod: PeriodSelection,
     onPeriodChange: (PeriodSelection) -> Unit,
+    onShiftPeriod: (Int) -> Unit,
     onPickCustomPeriod: () -> Unit,
     searchQuery: String,
     onSearchChange: (String) -> Unit,
@@ -1826,19 +1844,6 @@ fun MainScreen(
 ) {
     val stats = categoryStats(shown)
 
-    val shiftPeriod: (Int) -> Unit = { dir ->
-        when (val sel = selectedPeriod) {
-            is PeriodSelection.Monthly ->
-                onPeriodChange(PeriodSelection.Monthly(sel.start.plusMonths(dir.toLong())))
-            is PeriodSelection.Custom -> {
-                val len = sel.end.toEpochDay() - sel.start.toEpochDay() + 1
-                val start = sel.start.plusDays(len * dir)
-                onPeriodChange(PeriodSelection.Custom(start, start.plusDays(len - 1)))
-            }
-            PeriodSelection.All -> Unit
-        }
-    }
-
     Scaffold(
         containerColor = DarkBg,
         topBar = {
@@ -1851,7 +1856,7 @@ fun MainScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             if (selectedPeriod != PeriodSelection.All) {
                                 IconButton(
-                                    onClick = { shiftPeriod(-1) },
+                                    onClick = { onShiftPeriod(-1) },
                                     modifier = Modifier.size(44.dp)
                                 ) {
                                     Icon(
@@ -1886,7 +1891,7 @@ fun MainScreen(
                             }
                             if (selectedPeriod != PeriodSelection.All) {
                                 IconButton(
-                                    onClick = { shiftPeriod(1) },
+                                    onClick = { onShiftPeriod(1) },
                                     modifier = Modifier.size(44.dp)
                                 ) {
                                     Icon(
@@ -1989,8 +1994,8 @@ fun MainScreen(
                             if (!startInEdge) {
                                 val threshold = size.width / 5f
                                 when {
-                                    totalDrag >= threshold -> shiftPeriod(-1)
-                                    totalDrag <= -threshold -> shiftPeriod(1)
+                                    totalDrag >= threshold -> onShiftPeriod(-1)
+                                    totalDrag <= -threshold -> onShiftPeriod(1)
                                 }
                             }
                         }
@@ -3203,13 +3208,22 @@ fun CategoryScreen(
     stat: CategoryStat,
     listState: LazyListState,
     onBack: () -> Unit,
-    onOpenTxn: (Txn) -> Unit
+    onOpenTxn: (Txn) -> Unit,
+    periodLabel: String,
+    canShiftPeriod: Boolean,
+    onShiftPeriod: (Int) -> Unit
 ) {
     val dateGroups = stat.txs
         .groupBy { it.dt.toLocalDate() }
         .map { (date, items) ->
             DateGroup(dayHeaderLabel(items.first().dt), items)
         }
+
+    LaunchedEffect(periodLabel) {
+        if (listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0) {
+            listState.scrollToItem(0)
+        }
+    }
 
     Scaffold(
         containerColor = DarkBg,
@@ -3233,7 +3247,62 @@ fun CategoryScreen(
             modifier = Modifier
                 .padding(pad)
                 .fillMaxSize()
+                .pointerInput(canShiftPeriod) {
+                    if (!canShiftPeriod) return@pointerInput
+                    var totalDrag = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDrag = 0f },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            totalDrag += dragAmount
+                        },
+                        onDragEnd = {
+                            val threshold = size.width / 5f
+                            when {
+                                totalDrag >= threshold -> onShiftPeriod(-1)
+                                totalDrag <= -threshold -> onShiftPeriod(1)
+                            }
+                        }
+                    )
+                }
         ) {
+            if (canShiftPeriod) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { onShiftPeriod(-1) },
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.KeyboardArrowLeft,
+                            contentDescription = "Periode sebelumnya",
+                            tint = White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Text(
+                        periodLabel,
+                        color = GrayText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = { onShiftPeriod(1) },
+                        modifier = Modifier.size(44.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.KeyboardArrowRight,
+                            contentDescription = "Periode berikutnya",
+                            tint = White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3277,7 +3346,8 @@ fun CategoryScreen(
                             textAlign = TextAlign.Center
                         )
                         Text(
-                            "Coba periode lain dari header beranda",
+                            if (canShiftPeriod) "Ganti periode dengan panah di atas atau geser layar"
+                            else "Pilih periode lain dari beranda",
                             color = GrayText,
                             fontSize = 12.sp,
                             textAlign = TextAlign.Center,
