@@ -12,6 +12,7 @@ import androidx.activity.compose.setContent
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -56,6 +57,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -108,6 +110,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
@@ -131,6 +134,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -149,6 +153,7 @@ import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 import kotlin.math.floor
 import kotlin.math.log10
 import kotlin.math.pow
@@ -442,6 +447,26 @@ fun LetterAvatar(
     }
 }
 
+@Composable
+fun rememberPeriodShiftAnim(key: Any?, dir: Int): Modifier {
+    val distance = with(LocalDensity.current) { 56.dp.toPx() }
+    val offX = remember { Animatable(0f) }
+    val fade = remember { Animatable(1f) }
+    LaunchedEffect(key, dir) {
+        if (dir == 0) return@LaunchedEffect
+        offX.snapTo(distance * dir)
+        fade.snapTo(0.35f)
+        launch {
+            offX.animateTo(0f, tween(220, easing = FastOutSlowInEasing))
+        }
+        fade.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
+    }
+    return Modifier.graphicsLayer {
+        translationX = offX.value
+        alpha = fade.value
+    }
+}
+
 object Api {
     private fun enc(s: String): String =
         try {
@@ -477,6 +502,24 @@ object Api {
             "&id=" + enc(id) +
             "&category=" + enc(category) +
             "&subcategory=" + enc(subcategory) +
+            "&note=" + enc(note) +
+            "&amount=" + amount +
+            "&description=" + enc(description)
+        return fetch(url, token, query)
+    }
+
+    fun add(
+        url: String,
+        token: String,
+        id: String,
+        category: String,
+        note: String,
+        amount: Double,
+        description: String
+    ): String {
+        val query = "action=add" +
+            "&id=" + enc(id) +
+            "&category=" + enc(category) +
             "&note=" + enc(note) +
             "&amount=" + amount +
             "&description=" + enc(description)
@@ -1059,6 +1102,7 @@ fun App() {
     var tab by remember { mutableStateOf(0) }
     var detail by remember { mutableStateOf<Txn?>(null) }
     var editingTxn by remember { mutableStateOf<Txn?>(null) }
+    var newTxn by remember { mutableStateOf<Txn?>(null) }
     var convertCicilanTxn by remember { mutableStateOf<Txn?>(null) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
     var cicilanDetail by remember { mutableStateOf<CicilanPlan?>(null) }
@@ -1069,6 +1113,8 @@ fun App() {
     var searchQuery by remember { mutableStateOf("") }
     var bankFilter by remember { mutableStateOf<String?>(null) }
     var categoryFilter by remember { mutableStateOf<String?>(null) }
+    var periodShiftDir by remember { mutableStateOf(0) }
+    var checkingUpdate by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var locked by remember { mutableStateOf(lockActive(context)) }
@@ -1327,14 +1373,45 @@ fun App() {
 
     val shiftPeriod: (Int) -> Unit = { dir ->
         when (val sel = selected) {
-            is PeriodSelection.Monthly ->
+            is PeriodSelection.Monthly -> {
+                periodShiftDir = dir
                 selected = PeriodSelection.Monthly(sel.start.plusMonths(dir.toLong()))
+            }
             is PeriodSelection.Custom -> {
+                periodShiftDir = dir
                 val len = sel.end.toEpochDay() - sel.start.toEpochDay() + 1
                 val start = sel.start.plusDays(len * dir)
                 selected = PeriodSelection.Custom(start, start.plusDays(len - 1))
             }
             PeriodSelection.All -> Unit
+        }
+    }
+
+    LaunchedEffect(selected) {
+        delay(260)
+        periodShiftDir = 0
+    }
+
+    val checkUpdate: () -> Unit = {
+        if (!checkingUpdate) {
+            checkingUpdate = true
+            scope.launch {
+                val result = runCatching {
+                    withContext(Dispatchers.IO) { Updater.check(BuildConfig.VERSION_CODE) }
+                }
+                checkingUpdate = false
+                val update = result.getOrNull()
+                when {
+                    update != null -> {
+                        updateCode = update.first
+                        updateUrl = update.second
+                    }
+                    result.isSuccess ->
+                        Toast.makeText(context, "Versi sudah terbaru", Toast.LENGTH_SHORT).show()
+                    else ->
+                        Toast.makeText(context, "Gagal memeriksa update", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -1353,6 +1430,32 @@ fun App() {
                         note = updated.note,
                         amount = updated.amount,
                         description = updated.description
+                    )
+                }
+                val obj = JSONObject(body)
+                if (!obj.optBoolean("ok", false)) {
+                    obj.optString("error", "").ifBlank { "gagal menyimpan" }
+                } else null
+            } catch (e: Exception) {
+                e.message?.ifBlank { null } ?: "gagal menyimpan"
+            }
+        }
+    }
+
+    val saveTxnAdd: suspend (Txn) -> String? = { t ->
+        val cfg = loadApiConfig(context)
+        when {
+            cfg == null -> "URL & token API belum diatur"
+            else -> try {
+                val body = withContext(Dispatchers.IO) {
+                    Api.add(
+                        url = cfg.url,
+                        token = cfg.token,
+                        id = t.id,
+                        category = t.category,
+                        note = t.note,
+                        amount = t.amount,
+                        description = t.description
                     )
                 }
                 val obj = JSONObject(body)
@@ -1472,7 +1575,8 @@ fun App() {
             onOpenTxn = { detail = it },
             periodLabel = selectionLabel(selected),
             canShiftPeriod = selected != PeriodSelection.All,
-            onShiftPeriod = { dir -> shiftPeriod(dir) }
+            onShiftPeriod = { dir -> shiftPeriod(dir) },
+            periodShiftDir = periodShiftDir
         )
     } else {
         ModalNavigationDrawer(
@@ -1519,6 +1623,29 @@ fun App() {
                     NavigationDrawerItem(
                         icon = {
                             Icon(
+                                Icons.Filled.Refresh,
+                                contentDescription = null,
+                                tint = GrayText,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        label = {
+                            Text(
+                                if (checkingUpdate) "Memeriksa update..." else "Cek Update",
+                                fontSize = 13.sp,
+                                color = White
+                            )
+                        },
+                        selected = false,
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            checkUpdate()
+                        },
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                    NavigationDrawerItem(
+                        icon = {
+                            Icon(
                                 Icons.Filled.Settings,
                                 contentDescription = null,
                                 tint = GrayText,
@@ -1547,8 +1674,9 @@ fun App() {
                 shown = shown,
                 periods = recentPeriodOptions(),
                 selectedPeriod = selected,
-                onPeriodChange = { selected = it },
+                onPeriodChange = { periodShiftDir = 0; selected = it },
                 onShiftPeriod = { dir -> shiftPeriod(dir) },
+                periodShiftDir = periodShiftDir,
                 onPickCustomPeriod = { showCustomPeriod = true },
                 searchQuery = searchQuery,
                 onSearchChange = { searchQuery = it },
@@ -1561,6 +1689,19 @@ fun App() {
                 onOpenCategory = { selectedCategory = it },
                 onOpenPlan = { cicilanDetail = it },
                 onOpenDrawer = { scope.launch { drawerState.open() } },
+                onAddTxn = {
+                    newTxn = Txn(
+                        id = "MANUAL-" + UUID.randomUUID().toString(),
+                        dt = LocalDateTime.now(),
+                        account = "",
+                        category = "",
+                        icon = "",
+                        subcategory = "",
+                        note = "",
+                        description = "",
+                        amount = 0.0
+                    )
+                },
                 masterCategories = categoryDefs,
                 plans = plans
             )
@@ -1628,24 +1769,27 @@ fun App() {
         )
     }
 
+    val categoryOptions = buildList {
+        rows
+            ?.groupBy { it.category }
+            ?.filterKeys { it.isNotBlank() }
+            ?.forEach { (name, txns) ->
+                add(name to (txns.firstOrNull { it.icon.isNotBlank() }?.icon ?: ""))
+            }
+        categoryDefs?.forEach { def ->
+            if (none { it.first.equals(def.name, ignoreCase = true) }) {
+                add(def.name to def.icon)
+            }
+        }
+    }
+        .distinctBy { it.first.uppercase() }
+        .sortedBy { it.first.lowercase() }
+
     if (editingTxn != null) {
         EditTxnDialog(
             txn = editingTxn!!,
-            categories = buildList {
-                rows
-                    ?.groupBy { it.category }
-                    ?.filterKeys { it.isNotBlank() }
-                    ?.forEach { (name, txns) ->
-                        add(name to (txns.firstOrNull { it.icon.isNotBlank() }?.icon ?: ""))
-                    }
-                categoryDefs?.forEach { def ->
-                    if (none { it.first.equals(def.name, ignoreCase = true) }) {
-                        add(def.name to def.icon)
-                    }
-                }
-            }
-                .distinctBy { it.first.uppercase() }
-                .sortedBy { it.first.lowercase() },
+            categories = categoryOptions,
+            title = "Edit Transaksi",
             onDismiss = { editingTxn = null },
             onSave = saveTxnEdit,
             onSaved = { updated ->
@@ -1660,6 +1804,29 @@ fun App() {
                 rows = rows?.map { if (it.id == fixed.id) fixed else it }
                 if (detail?.id == fixed.id) detail = fixed
                 editingTxn = null
+                persistCache()
+            }
+        )
+    }
+
+    if (newTxn != null) {
+        EditTxnDialog(
+            txn = newTxn!!,
+            categories = categoryOptions,
+            title = "Tambah Transaksi",
+            onDismiss = { newTxn = null },
+            onSave = saveTxnAdd,
+            onSaved = { added ->
+                val newIcon = rows
+                    ?.filter { it.category.equals(added.category, ignoreCase = true) }
+                    ?.firstOrNull { it.icon.isNotBlank() }?.icon
+                    ?: categoryDefs
+                        ?.firstOrNull { it.name.equals(added.category, ignoreCase = true) }
+                        ?.icon
+                    ?: ""
+                val fixed = added.copy(icon = newIcon)
+                rows = listOf(fixed) + (rows ?: emptyList())
+                newTxn = null
                 persistCache()
             }
         )
@@ -1744,6 +1911,7 @@ fun App() {
             onDismiss = { showCustomPeriod = false },
             onConfirm = { start, end ->
                 showCustomPeriod = false
+                periodShiftDir = 0
                 selected = PeriodSelection.Custom(start, end)
             }
         )
@@ -1827,6 +1995,7 @@ fun MainScreen(
     selectedPeriod: PeriodSelection,
     onPeriodChange: (PeriodSelection) -> Unit,
     onShiftPeriod: (Int) -> Unit,
+    periodShiftDir: Int,
     onPickCustomPeriod: () -> Unit,
     searchQuery: String,
     onSearchChange: (String) -> Unit,
@@ -1839,6 +2008,7 @@ fun MainScreen(
     onOpenCategory: (String) -> Unit,
     onOpenPlan: (CicilanPlan) -> Unit,
     onOpenDrawer: () -> Unit,
+    onAddTxn: () -> Unit,
     masterCategories: List<CategoryDef>? = null,
     plans: List<CicilanPlan>? = null
 ) {
@@ -1970,12 +2140,24 @@ fun MainScreen(
         },
         bottomBar = {
             CompactBottomBar(tab = tab, onTabChange = onTabChange)
+        },
+        floatingActionButton = {
+            if (tab == 0) {
+                FloatingActionButton(
+                    onClick = onAddTxn,
+                    containerColor = RedPrimary,
+                    contentColor = White
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = "Tambah transaksi")
+                }
+            }
         }
     ) { pad ->
         Column(
             modifier = Modifier
                 .padding(pad)
                 .fillMaxSize()
+                .then(rememberPeriodShiftAnim(selectedPeriod, periodShiftDir))
                 .pointerInput(selectedPeriod) {
                     var totalDrag = 0f
                     var startInEdge = false
@@ -2262,7 +2444,7 @@ fun TransactionTab(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(bottom = 16.dp)
+                        contentPadding = PaddingValues(bottom = 88.dp)
                     ) {
                         items(dateGroups) { group ->
                             DateGroupCard(group) { onOpenTxn(it) }
@@ -3211,7 +3393,8 @@ fun CategoryScreen(
     onOpenTxn: (Txn) -> Unit,
     periodLabel: String,
     canShiftPeriod: Boolean,
-    onShiftPeriod: (Int) -> Unit
+    onShiftPeriod: (Int) -> Unit,
+    periodShiftDir: Int
 ) {
     val dateGroups = stat.txs
         .groupBy { it.dt.toLocalDate() }
@@ -3247,6 +3430,7 @@ fun CategoryScreen(
             modifier = Modifier
                 .padding(pad)
                 .fillMaxSize()
+                .then(rememberPeriodShiftAnim(periodLabel, periodShiftDir))
                 .pointerInput(canShiftPeriod) {
                     if (!canShiftPeriod) return@pointerInput
                     var totalDrag = 0f
@@ -4472,6 +4656,7 @@ fun ConvertCicilanDialog(
 fun EditTxnDialog(
     txn: Txn,
     categories: List<Pair<String, String>>,
+    title: String,
     onDismiss: () -> Unit,
     onSave: suspend (Txn) -> String?,
     onSaved: (Txn) -> Unit
@@ -4480,8 +4665,11 @@ fun EditTxnDialog(
     var note by remember(txn.id) { mutableStateOf(txn.note) }
     var amountStr by remember(txn.id) {
         mutableStateOf(
-            if (txn.amount % 1.0 == 0.0) txn.amount.toLong().toString()
-            else txn.amount.toString()
+            when {
+                txn.amount == 0.0 -> ""
+                txn.amount % 1.0 == 0.0 -> txn.amount.toLong().toString()
+                else -> txn.amount.toString()
+            }
         )
     }
     var description by remember(txn.id) { mutableStateOf(txn.description) }
@@ -4508,6 +4696,7 @@ fun EditTxnDialog(
         val amount = amountStr.toDoubleOrNull()
         when {
             saving -> return
+            category.isBlank() -> error = "Kategori wajib diisi"
             amount == null || amount <= 0 -> error = "Nominal tidak valid"
             else -> {
                 saving = true
@@ -4530,7 +4719,7 @@ fun EditTxnDialog(
 
     AlertDialog(
         onDismissRequest = { if (!saving) onDismiss() },
-        title = { Text("Edit Transaksi", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
+        title = { Text(title, fontSize = 17.sp, fontWeight = FontWeight.Bold) },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
