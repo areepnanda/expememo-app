@@ -4883,22 +4883,6 @@ fun EditTxnDialog(
                                 .heightIn(max = 220.dp)
                         ) {
                             LazyColumn {
-                                item {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                account = ""
-                                                bankOpen = false
-                                            }
-                                            .padding(horizontal = 12.dp, vertical = 10.dp)
-                                    ) {
-                                        LetterAvatar("?", size = 24.dp, fontSize = 12.sp)
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Text("Tanpa bank", fontSize = 13.sp, color = White)
-                                    }
-                                }
                                 items(accounts) { b ->
                                     Row(
                                         verticalAlignment = Alignment.CenterVertically,
