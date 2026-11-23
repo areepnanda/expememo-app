@@ -787,14 +787,32 @@ fun excludedIdsFromJson(obj: JSONObject): Set<String> =
             .toSet()
     } ?: emptySet()
 
+// Semua id transaksi yang masih ada di sheet (null kalau server lama).
+fun idsFromJson(obj: JSONObject): Set<String>? =
+    obj.optJSONArray("ids")?.let { arr ->
+        (0 until arr.length())
+            .map { arr.optString(it, "").trim() }
+            .filter { it.isNotBlank() }
+            .toSet()
+    }
+
+fun windowFromOf(obj: JSONObject): LocalDate? {
+    val s = obj.optString("windowFrom", "")
+    return if (s.matches(Regex("\\d{4}-\\d{2}-\\d{2}"))) LocalDate.parse(s) else null
+}
+
 // Sinkron = replace semua row yang dikirim server (by id),
 // hapus row yang server exclude secara eksplisit (excludedIds),
 // row lama di luar window 24 bulan tetap disimpan di cache.
+// Kalau server kirim ids (semua id di sheet) + windowFrom, row dalam window
+// yang id-nya sudah tidak ada di sheet dianggap dihapus manual dan dibuang.
 // Row tanpa id dibuang & fresh didupe by id (jaga-jaga sheet berisi dobel).
 fun mergeTxns(
     current: List<Txn>,
     fresh: List<Txn>,
-    excludedIds: Set<String> = emptySet()
+    excludedIds: Set<String> = emptySet(),
+    serverIds: Set<String>? = null,
+    windowStart: LocalDate? = null
 ): List<Txn> {
     val freshClean = fresh
         .filter { it.id.isNotBlank() && it.id !in excludedIds }
@@ -802,7 +820,9 @@ fun mergeTxns(
     if (current.isEmpty()) return freshClean
     val freshIds = freshClean.map { it.id }.toHashSet()
     val kept = current.filter {
-        it.id.isNotBlank() && it.id !in freshIds && it.id !in excludedIds
+        it.id.isNotBlank() && it.id !in freshIds && it.id !in excludedIds &&
+            (serverIds == null || windowStart == null ||
+                it.id in serverIds || it.dt.toLocalDate().isBefore(windowStart))
     }
     return (kept + freshClean).sortedByDescending { it.dt }
 }
@@ -1172,7 +1192,9 @@ fun App() {
                     val merged = mergeTxns(
                         rows ?: emptyList(),
                         fresh,
-                        excludedIdsFromJson(obj)
+                        excludedIdsFromJson(obj),
+                        idsFromJson(obj),
+                        windowFromOf(obj)
                     )
                     rows = merged
                     categoryDefs = rules
@@ -1214,7 +1236,9 @@ fun App() {
                     val merged = mergeTxns(
                         rows ?: emptyList(),
                         fresh,
-                        excludedIdsFromJson(obj)
+                        excludedIdsFromJson(obj),
+                        idsFromJson(obj),
+                        windowFromOf(obj)
                     )
                     rows = merged
                     if (obj.has("plans")) plans = plansFromJsonArray(obj.optJSONArray("plans"))
