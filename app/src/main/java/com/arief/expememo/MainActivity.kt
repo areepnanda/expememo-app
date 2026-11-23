@@ -513,6 +513,7 @@ object Api {
         token: String,
         id: String,
         category: String,
+        account: String,
         note: String,
         amount: Double,
         description: String
@@ -520,6 +521,7 @@ object Api {
         val query = "action=add" +
             "&id=" + enc(id) +
             "&category=" + enc(category) +
+            "&account=" + enc(account) +
             "&note=" + enc(note) +
             "&amount=" + amount +
             "&description=" + enc(description)
@@ -1453,6 +1455,7 @@ fun App() {
                         token = cfg.token,
                         id = t.id,
                         category = t.category,
+                        account = t.account,
                         note = t.note,
                         amount = t.amount,
                         description = t.description
@@ -1785,6 +1788,12 @@ fun App() {
         .distinctBy { it.first.uppercase() }
         .sortedBy { it.first.lowercase() }
 
+    val accountOptions = (rows ?: emptyList())
+        .map { it.account }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .sorted()
+
     if (editingTxn != null) {
         EditTxnDialog(
             txn = editingTxn!!,
@@ -1813,6 +1822,7 @@ fun App() {
         EditTxnDialog(
             txn = newTxn!!,
             categories = categoryOptions,
+            accounts = accountOptions,
             title = "Tambah Transaksi",
             onDismiss = { newTxn = null },
             onSave = saveTxnAdd,
@@ -2145,6 +2155,7 @@ fun MainScreen(
             if (tab == 0) {
                 FloatingActionButton(
                     onClick = onAddTxn,
+                    shape = CircleShape,
                     containerColor = RedPrimary,
                     contentColor = White
                 ) {
@@ -3589,6 +3600,7 @@ fun CategoryManageScreen(
         floatingActionButton = {
             FloatingActionButton(
                 onClick = onAdd,
+                shape = CircleShape,
                 containerColor = RedPrimary,
                 contentColor = White
             ) {
@@ -4656,12 +4668,14 @@ fun ConvertCicilanDialog(
 fun EditTxnDialog(
     txn: Txn,
     categories: List<Pair<String, String>>,
+    accounts: List<String> = emptyList(),
     title: String,
     onDismiss: () -> Unit,
     onSave: suspend (Txn) -> String?,
     onSaved: (Txn) -> Unit
 ) {
     var category by remember(txn.id) { mutableStateOf(txn.category) }
+    var account by remember(txn.id) { mutableStateOf(txn.account) }
     var note by remember(txn.id) { mutableStateOf(txn.note) }
     var amountStr by remember(txn.id) {
         mutableStateOf(
@@ -4674,6 +4688,7 @@ fun EditTxnDialog(
     }
     var description by remember(txn.id) { mutableStateOf(txn.description) }
     var catOpen by remember(txn.id) { mutableStateOf(false) }
+    var bankOpen by remember(txn.id) { mutableStateOf(false) }
     var catQuery by remember(txn.id) { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -4686,6 +4701,12 @@ fun EditTxnDialog(
             catOpen = true
             catQuery = null
         }
+    }
+
+    val bankFieldInteraction = remember(txn.id) { MutableInteractionSource() }
+    val bankFieldPressed by bankFieldInteraction.collectIsPressedAsState()
+    LaunchedEffect(bankFieldPressed) {
+        if (bankFieldPressed) bankOpen = true
     }
 
     val query = catQuery
@@ -4703,6 +4724,7 @@ fun EditTxnDialog(
                 error = null
                 val updated = txn.copy(
                     category = category.trim(),
+                    account = account.trim(),
                     subcategory = txn.subcategory,
                     note = note.trim(),
                     amount = amount,
@@ -4796,6 +4818,89 @@ fun EditTxnDialog(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
+                                }
+                            }
+                        }
+                    }
+                }
+                if (accounts.isNotEmpty()) {
+                    OutlinedTextField(
+                        value = account,
+                        onValueChange = {
+                            account = it
+                            error = null
+                        },
+                        label = { Text("Bank / Akun", fontSize = 12.sp, color = GrayText) },
+                        singleLine = true,
+                        textStyle = TextStyle(fontSize = 13.sp, color = White),
+                        interactionSource = bankFieldInteraction,
+                        trailingIcon = {
+                            IconButton(
+                                onClick = { bankOpen = !bankOpen },
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.ArrowDropDown,
+                                    contentDescription = "Pilih bank",
+                                    tint = GrayText,
+                                    modifier = Modifier.rotate(if (bankOpen) 180f else 0f)
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (bankOpen) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkSurface,
+                            border = BorderStroke(1.dp, CardBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                        ) {
+                            LazyColumn {
+                                item {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                account = ""
+                                                bankOpen = false
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                                    ) {
+                                        LetterAvatar("?", size = 24.dp, fontSize = 12.sp)
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text("Tanpa bank", fontSize = 13.sp, color = White)
+                                    }
+                                }
+                                items(accounts) { b ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                account = b
+                                                bankOpen = false
+                                                error = null
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                                    ) {
+                                        LetterAvatar(
+                                            b.trim().take(1).uppercase(),
+                                            size = 24.dp,
+                                            fontSize = 12.sp
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            b,
+                                            fontSize = 13.sp,
+                                            color = White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                 }
                             }
                         }
