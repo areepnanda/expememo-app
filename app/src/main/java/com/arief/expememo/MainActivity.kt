@@ -388,7 +388,8 @@ data class Txn(
     val subcategory: String,
     val note: String,
     val description: String,
-    val amount: Double
+    val amount: Double,
+    val type: String
 )
 
 data class DateGroup(val label: String, val items: List<Txn>)
@@ -496,7 +497,8 @@ object Api {
         subcategory: String,
         note: String,
         amount: Double,
-        description: String
+        description: String,
+        type: String
     ): String {
         val query = "action=update" +
             "&id=" + enc(id) +
@@ -504,7 +506,8 @@ object Api {
             "&subcategory=" + enc(subcategory) +
             "&note=" + enc(note) +
             "&amount=" + amount +
-            "&description=" + enc(description)
+            "&description=" + enc(description) +
+            "&type=" + enc(type)
         return fetch(url, token, query)
     }
 
@@ -516,7 +519,8 @@ object Api {
         account: String,
         note: String,
         amount: Double,
-        description: String
+        description: String,
+        type: String
     ): String {
         val query = "action=add" +
             "&id=" + enc(id) +
@@ -524,7 +528,8 @@ object Api {
             "&account=" + enc(account) +
             "&note=" + enc(note) +
             "&amount=" + amount +
-            "&description=" + enc(description)
+            "&description=" + enc(description) +
+            "&type=" + enc(type)
         return fetch(url, token, query)
     }
 
@@ -678,7 +683,8 @@ fun txnsFromJsonArray(arr: JSONArray): List<Txn> =
                 subcategory = o.optString("subcategory", "").trim(),
                 note = o.getString("note").trim(),
                 description = o.optString("description", "").trim(),
-                amount = o.getDouble("amount")
+                amount = o.getDouble("amount"),
+                type = o.optString("incomeExpense", o.optString("type", "Expense")).trim()
             )
         }
 
@@ -715,6 +721,15 @@ fun parseCategoryDefs(json: String): List<CategoryDef> {
         throw Exception(obj.optString("error", "respon tidak valid"))
     }
     return rulesFromJsonArray(obj.getJSONArray("categories"))
+}
+
+// null = server lama yang belum kirim "types" (jangan timpa list lama)
+fun typesFromJson(obj: JSONObject): List<String>? {
+    val arr = obj.optJSONArray("types") ?: return null
+    val out = (0 until arr.length())
+        .map { arr.optString(it, "").trim() }
+        .filter { it.isNotBlank() }
+    return out.distinctBy { it.uppercase() }.ifEmpty { null }
 }
 
 data class CicilanPlan(
@@ -770,6 +785,7 @@ private fun txnToJson(t: Txn): JSONObject = JSONObject().apply {
     put("note", t.note)
     put("description", t.description)
     put("amount", t.amount)
+    put("type", t.type)
 }
 
 private fun ruleToJson(d: CategoryDef): JSONObject = JSONObject().apply {
@@ -1144,6 +1160,7 @@ fun App() {
     var showSettings by remember { mutableStateOf(false) }
     var showCategories by remember { mutableStateOf(false) }
     var categoryDefs by remember { mutableStateOf<List<CategoryDef>?>(null) }
+    var typeOptions by remember { mutableStateOf<List<String>?>(null) }
     var plans by remember { mutableStateOf<List<CicilanPlan>?>(null) }
     var lastSync by remember { mutableStateOf(0L) }
     var catAddOpen by remember { mutableStateOf(false) }
@@ -1198,6 +1215,7 @@ fun App() {
                     )
                     rows = merged
                     categoryDefs = rules
+                    typeOptions = typesFromJson(obj) ?: typeOptions
                     if (obj.has("plans")) plans = plansFromJsonArray(obj.optJSONArray("plans"))
                     lastSync = syncedAt
                     withContext(Dispatchers.IO) {
@@ -1241,6 +1259,7 @@ fun App() {
                         windowFromOf(obj)
                     )
                     rows = merged
+                    typeOptions = typesFromJson(obj) ?: typeOptions
                     if (obj.has("plans")) plans = plansFromJsonArray(obj.optJSONArray("plans"))
                     lastSync = System.currentTimeMillis()
                     withContext(Dispatchers.IO) {
@@ -1455,7 +1474,8 @@ fun App() {
                         subcategory = updated.subcategory,
                         note = updated.note,
                         amount = updated.amount,
-                        description = updated.description
+                        description = updated.description,
+                        type = updated.type
                     )
                 }
                 val obj = JSONObject(body)
@@ -1482,7 +1502,8 @@ fun App() {
                         account = t.account,
                         note = t.note,
                         amount = t.amount,
-                        description = t.description
+                        description = t.description,
+                        type = t.type
                     )
                 }
                 val obj = JSONObject(body)
@@ -1726,7 +1747,10 @@ fun App() {
                         subcategory = "",
                         note = "",
                         description = "",
-                        amount = 0.0
+                        amount = 0.0,
+                        type = (typeOptions ?: emptyList()).firstOrNull {
+                            it.equals("Expense", ignoreCase = true)
+                        } ?: "Expense"
                     )
                 },
                 masterCategories = categoryDefs,
@@ -1822,6 +1846,7 @@ fun App() {
         EditTxnDialog(
             txn = editingTxn!!,
             categories = categoryOptions,
+            typeOptions = typeOptions ?: emptyList(),
             title = "Edit Transaksi",
             onDismiss = { editingTxn = null },
             onSave = saveTxnEdit,
@@ -1847,6 +1872,7 @@ fun App() {
             txn = newTxn!!,
             categories = categoryOptions,
             accounts = accountOptions,
+            typeOptions = typeOptions ?: emptyList(),
             title = "Tambah Transaksi",
             onDismiss = { newTxn = null },
             onSave = saveTxnAdd,
@@ -4693,6 +4719,7 @@ fun EditTxnDialog(
     txn: Txn,
     categories: List<Pair<String, String>>,
     accounts: List<String> = emptyList(),
+    typeOptions: List<String> = emptyList(),
     title: String,
     onDismiss: () -> Unit,
     onSave: suspend (Txn) -> String?,
@@ -4700,6 +4727,7 @@ fun EditTxnDialog(
 ) {
     var category by remember(txn.id) { mutableStateOf(txn.category) }
     var account by remember(txn.id) { mutableStateOf(txn.account) }
+    var type by remember(txn.id) { mutableStateOf(txn.type.ifBlank { "Expense" }) }
     var note by remember(txn.id) { mutableStateOf(txn.note) }
     var amountStr by remember(txn.id) {
         mutableStateOf(
@@ -4713,6 +4741,7 @@ fun EditTxnDialog(
     var description by remember(txn.id) { mutableStateOf(txn.description) }
     var catOpen by remember(txn.id) { mutableStateOf(false) }
     var bankOpen by remember(txn.id) { mutableStateOf(false) }
+    var typeOpen by remember(txn.id) { mutableStateOf(false) }
     var catQuery by remember(txn.id) { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -4733,6 +4762,12 @@ fun EditTxnDialog(
         if (bankFieldPressed) bankOpen = true
     }
 
+    val typeFieldInteraction = remember(txn.id) { MutableInteractionSource() }
+    val typeFieldPressed by typeFieldInteraction.collectIsPressedAsState()
+    LaunchedEffect(typeFieldPressed) {
+        if (typeFieldPressed) typeOpen = true
+    }
+
     val query = catQuery
     val catOptions = if (query.isNullOrBlank()) categories
     else categories.filter { it.first.contains(query, true) }
@@ -4742,6 +4777,7 @@ fun EditTxnDialog(
         when {
             saving -> return
             category.isBlank() -> error = "Kategori wajib diisi"
+            type.isBlank() -> error = "Type wajib diisi"
             amount == null || amount <= 0 -> error = "Nominal tidak valid"
             else -> {
                 saving = true
@@ -4752,7 +4788,8 @@ fun EditTxnDialog(
                     subcategory = txn.subcategory,
                     note = note.trim(),
                     amount = amount,
-                    description = description.trim()
+                    description = description.trim(),
+                    type = type.trim()
                 )
                 scope.launch {
                     val err = onSave(updated)
@@ -4771,6 +4808,73 @@ fun EditTxnDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.verticalScroll(rememberScrollState())
             ) {
+                if (accounts.isNotEmpty()) {
+                    OutlinedTextField(
+                        value = account,
+                        onValueChange = {
+                            account = it
+                            error = null
+                        },
+                        label = { Text("Bank / Akun", fontSize = 12.sp, color = GrayText) },
+                        singleLine = true,
+                        textStyle = TextStyle(fontSize = 13.sp, color = White),
+                        interactionSource = bankFieldInteraction,
+                        trailingIcon = {
+                            IconButton(
+                                onClick = { bankOpen = !bankOpen },
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.ArrowDropDown,
+                                    contentDescription = "Pilih bank",
+                                    tint = GrayText,
+                                    modifier = Modifier.rotate(if (bankOpen) 180f else 0f)
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (bankOpen) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkSurface,
+                            border = BorderStroke(1.dp, CardBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                        ) {
+                            LazyColumn {
+                                items(accounts) { b ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                account = b
+                                                bankOpen = false
+                                                error = null
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                                    ) {
+                                        LetterAvatar(
+                                            b.trim().take(1).uppercase(),
+                                            size = 24.dp,
+                                            fontSize = 12.sp
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            b,
+                                            fontSize = 13.sp,
+                                            color = White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = category,
                     onValueChange = {
@@ -4847,73 +4951,6 @@ fun EditTxnDialog(
                         }
                     }
                 }
-                if (accounts.isNotEmpty()) {
-                    OutlinedTextField(
-                        value = account,
-                        onValueChange = {
-                            account = it
-                            error = null
-                        },
-                        label = { Text("Bank / Akun", fontSize = 12.sp, color = GrayText) },
-                        singleLine = true,
-                        textStyle = TextStyle(fontSize = 13.sp, color = White),
-                        interactionSource = bankFieldInteraction,
-                        trailingIcon = {
-                            IconButton(
-                                onClick = { bankOpen = !bankOpen },
-                                modifier = Modifier.size(44.dp)
-                            ) {
-                                Icon(
-                                    Icons.Filled.ArrowDropDown,
-                                    contentDescription = "Pilih bank",
-                                    tint = GrayText,
-                                    modifier = Modifier.rotate(if (bankOpen) 180f else 0f)
-                                )
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    if (bankOpen) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = DarkSurface,
-                            border = BorderStroke(1.dp, CardBorder),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 220.dp)
-                        ) {
-                            LazyColumn {
-                                items(accounts) { b ->
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                account = b
-                                                bankOpen = false
-                                                error = null
-                                            }
-                                            .padding(horizontal = 12.dp, vertical = 10.dp)
-                                    ) {
-                                        LetterAvatar(
-                                            b.trim().take(1).uppercase(),
-                                            size = 24.dp,
-                                            fontSize = 12.sp
-                                        )
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Text(
-                                            b,
-                                            fontSize = 13.sp,
-                                            color = White,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
                 OutlinedTextField(
                     value = note,
                     onValueChange = {
@@ -4950,6 +4987,79 @@ fun EditTxnDialog(
                     textStyle = TextStyle(fontSize = 13.sp, color = White),
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (typeOptions.isNotEmpty()) {
+                    OutlinedTextField(
+                        value = type,
+                        onValueChange = {
+                            type = it
+                            typeOpen = false
+                            error = null
+                        },
+                        label = { Text("Type", fontSize = 12.sp, color = GrayText) },
+                        singleLine = true,
+                        textStyle = TextStyle(fontSize = 13.sp, color = White),
+                        interactionSource = typeFieldInteraction,
+                        trailingIcon = {
+                            IconButton(
+                                onClick = { typeOpen = !typeOpen },
+                                modifier = Modifier.size(44.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.ArrowDropDown,
+                                    contentDescription = "Pilih type",
+                                    tint = GrayText,
+                                    modifier = Modifier.rotate(if (typeOpen) 180f else 0f)
+                                )
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (typeOpen) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = DarkSurface,
+                            border = BorderStroke(1.dp, CardBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 220.dp)
+                        ) {
+                            LazyColumn {
+                                items(typeOptions) { t ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                type = t
+                                                typeOpen = false
+                                                error = null
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                                    ) {
+                                        Text(
+                                            t,
+                                            fontSize = 13.sp,
+                                            color = White,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = type,
+                        onValueChange = {
+                            type = it
+                            error = null
+                        },
+                        label = { Text("Type", fontSize = 12.sp, color = GrayText) },
+                        singleLine = true,
+                        textStyle = TextStyle(fontSize = 13.sp, color = White),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 if (error != null) {
                     Text(
                         error!!,
